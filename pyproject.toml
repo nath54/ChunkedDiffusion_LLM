@@ -1,0 +1,22 @@
+[project]
+name = "chunkeddiffusion-llm"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "accelerate>=1.10.0",
+    "datasets>=4.0.0",
+    "matplotlib>=3.10.5",
+    "ninja>=1.13.0",
+    "numba>=0.61.2",
+    "numpy>=2.2.6",
+    "pillow>=11.3.0",
+    "scikit-learn>=1.7.1",
+    "sympy>=1.14.0",
+    "torch>=2.8.0",
+    "torchvision>=0.23.0",
+    "tqdm>=4.67.1",
+    "transformers>=4.55.4",
+    "trl>=0.21.0",
+]
