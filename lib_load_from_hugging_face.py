@@ -46,7 +46,7 @@ def load_model(model_name: str) -> PreTrainedModel:
 #
 ### Load pre-trained tokenizer from hugging face. ###
 #
-def load_tokenizer(model_name: str, tokenizer_padding_side: str = "left") -> PreTrainedTokenizer:
+def load_tokenizer(model_name: str, tokenizer_padding_side: str = "right") -> PreTrainedTokenizer:
 
     #
     tokenizer: PreTrainedTokenizer = cast(PreTrainedTokenizer, AutoTokenizer.from_pretrained(  # type: ignore

@@ -91,7 +91,7 @@ class Chunk:
         batch_size: Optional[int] = None,
         initial_data: Optional[Tensor] = None,
         initial_data_permissions_mask: Optional[Tensor] = None,
-        nb_permissions: int = 6,
+        nb_permissions_items: int = 9,
         padding_token: int = 0,
         dtype: torch.dtype = torch.float32,
         device: str | torch.device = get_best_device()
@@ -103,7 +103,7 @@ class Chunk:
         #
         self.padding_token: int = padding_token
         #
-        self.nb_permissions: int = nb_permissions
+        self.nb_permissions_items: int = nb_permissions_items
 
         #
         self.chunk_length: int = chunk_length
@@ -112,19 +112,19 @@ class Chunk:
         #
         ### Prepare Tensor Shapes ###
         #
-        self.chunk_context_shape: tuple[int, ...] = (self.chunk_length, 1)
-        self.permissions_mask_context_shape: tuple[int, ...] = (self.chunk_length, nb_permissions)
+        self.chunk_context_shape: tuple[int, ...] = (self.chunk_length,)
+        self.permissions_mask_context_shape: tuple[int, ...] = (self.chunk_length, nb_permissions_items)
         #
-        self.chunk_global_context_shape: tuple[int, ...] = (self.chunk_global_context_length, 1)
-        self.permissions_mask_global_context_shape: tuple[int, ...] = (self.chunk_global_context_length, nb_permissions)
+        self.chunk_global_context_shape: tuple[int, ...] = (self.chunk_global_context_length,)
+        self.permissions_mask_global_context_shape: tuple[int, ...] = (self.chunk_global_context_length, nb_permissions_items)
         #
         if batch_size is not None:
             #
-            self.chunk_context_shape = (batch_size, chunk_length, 1)
-            self.permissions_mask_context_shape = (batch_size, chunk_length, nb_permissions)
+            self.chunk_context_shape = (batch_size, chunk_length,)
+            self.permissions_mask_context_shape = (batch_size, chunk_length, nb_permissions_items)
             #
-            self.chunk_global_context_shape = (batch_size, self.chunk_global_context_length, 1)
-            self.permissions_mask_global_context_shape = (batch_size, self.chunk_global_context_length, nb_permissions)
+            self.chunk_global_context_shape = (batch_size, self.chunk_global_context_length,)
+            self.permissions_mask_global_context_shape = (batch_size, self.chunk_global_context_length, nb_permissions_items)
 
         #
         ### Create chunk context data. ###
@@ -161,10 +161,10 @@ class Chunk:
             self.permission_mask_context_data = set_matrix_initial_data(destination=self.chunk_context_data, source=initial_data_permissions_mask)
 
         #
-        ### Create chunk context data. ###
+        ### Create chunk global context data. ###
         #
-        self.chunk_context_data: Tensor = torch.full(
-            size=self.chunk_context_shape,
+        self.chunk_global_context_data: Tensor = torch.full(
+            size=self.chunk_global_context_shape,
             fill_value=self.padding_token,
             dtype=torch.int64,
             device=self.device
@@ -172,9 +172,16 @@ class Chunk:
         #
         ### Create permissions mask for chunk context data. ###
         #
-        self.permission_mask_context_data: Tensor = torch.full(
-            size=self.permissions_mask_context_shape,
+        self.permission_mask_global_context_data: Tensor = torch.full(
+            size=self.permissions_mask_global_context_shape,
             fill_value=0,
             dtype=self.dtype,
             device=self.device
         )
+
+        #
+        ### Set padding tokens hidden. ###
+        #
+        permission_hidden: Tensor = Tensor([1] + [0] * self.nb_permissions_items)
+        #
+        # TODO: set padding tokens hidden.

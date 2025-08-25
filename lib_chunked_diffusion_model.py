@@ -3,16 +3,17 @@
 #
 from typing import Optional
 #
+import torch
 from torch import Tensor
 from torch import nn
 #
-from transformers import PreTrainedModel
+from transformers import PreTrainedModel, PreTrainedTokenizer
 #
-from lib_load_from_hugging_face import load_model
-#
+from lib_load_from_hugging_face import load_model, load_tokenizer
 from lib_chunked_diffusion_model_config import ChunkedDiffusionModelConfig
-#
 from lib_chunks import Chunk
+from lib_get_device import get_best_device
+
 
 
 #
@@ -28,14 +29,16 @@ class ChunkedDiffusionModel(nn.Module):
         #
         self.model: PreTrainedModel = load_model(model_name=self.config.from_model_name)
         #
-        self.model_embedding_layer: Optional[nn.Module] = None  # TODO
-        self.model_transformer_layers: Optional[nn.ModuleList] = None  # TODO
-        self.model_lm_head: Optional[nn.Module] = None  # TODO
+        self.model_embedding_layer: Optional[nn.Module] = None  # Will be initialized with prepare_model()
+        self.model_transformer_layers: Optional[nn.ModuleList] = None  # Will be initialized with prepare_model()
+        self.model_lm_head: Optional[nn.Module] = None  # Will be initialized with prepare_model()
         #
         self.projector: nn.Linear = nn.Linear(
             in_features = self.config.from_model_config_hidden_size,
             out_features = (self.config.from_model_config_hidden_size - self.config.permissions_mask_nb_items)
         )
+        #
+        self.prepare_model()
 
 
     #
@@ -83,95 +86,35 @@ class ChunkedDiffusionModel(nn.Module):
 
 
     #
-    def run(
+    def forward(
         self,
-        input_ids: Tensor,
-        attention_mask: Optional[Tensor] = None,
-        past_key_values: Optional[tuple[tuple[Tensor, Tensor], ...]] = None,
-        use_cache: Optional[bool] = None
-    ) -> tuple[Tensor, Optional[tuple[tuple[Tensor, Tensor], ...]]]:
-
-        """
-        Performs the forward pass of the model using its decomposed components.
-
-        This method supports caching of key-value states for efficient, auto-regressive
-        text generation.
-
-        Args:
-            input_ids (Tensor): The input token IDs. Shape: (batch_size, sequence_length).
-            attention_mask (Optional[Tensor]): Mask to avoid performing attention on padding
-                                               token indices. Shape: (batch_size, sequence_length).
-            past_key_values (Optional[Tuple[Tuple[Tensor, Tensor], ...]]):
-                A tuple containing pre-computed key-value states for each transformer layer.
-                Used to speed up sequential decoding.
-            use_cache (Optional[bool]): If True, the model returns the updated key-value states.
-
-        Returns:
-            A tuple containing:
-            - logits (Tensor): The raw, unnormalized scores for each token in the vocabulary.
-                               Shape: (batch_size, sequence_length, vocab_size).
-            - new_past_key_values (Optional[Tuple[...]]): The updated cache if `use_cache` is True.
-        """
+        input_ids: Tensor,  # Dim: (B?, C, d_E)
+        permissions_mask: Tensor,  # Dim: (B?, C, k)
+        attention_causal_mask: Tensor
+    ) -> tuple[Tensor, Tensor]:
 
         #
-        ### Ensure the model components have been initialized from the pre-trained model. ###
-        #
-        if self.model_embedding_layer is None or self.model_transformer_layers is None or self.model_lm_head is None:
-            #
-            raise RuntimeError(
-                "Model components are not initialized. Please call `prepare_model()` before running the model."
-            )
+        hidden_state: Tensor = self.model_embedding_layer(input_ids)  # type: ignore
+        # Dim: (B?, C, d_E)
 
         #
-        ### 1. Pass input tokens through the embedding layer. ###
-        #
-        hidden_states: Tensor = self.model_embedding_layer(input_ids)
-
-        #
-        ### 2. Sequentially pass the hidden states through each transformer layer. ###
-        #
-        present_key_values: Optional[list[tuple[Tensor, Tensor]]] = [] if use_cache else None
-
-        #
-        for i, layer in enumerate(self.model_transformer_layers):
+        for layer in self.model_transformer_layers:  # type: ignore
 
             #
-            ### Extract the past key-value state for the current layer, if available. ###
-            #
-            layer_past: Optional[tuple[Tensor, Tensor]] = past_key_values[i] if past_key_values is not None else None
+            projected_hidden_state: Tensor = self.projector( hidden_state )
+            # Dim: (B?, C, d_E - k)
 
             #
-            ### A standard Hugging Face transformer layer returns a tuple. ###
-            ### The first element is the new hidden state. ###
-            ### The second, if use_cache is True, is the updated key-value pair (the "present" state). ###
-            #
-            layer_outputs = layer(
-                hidden_states,
-                attention_mask=attention_mask,
-                past_key_value=layer_past,
-                use_cache=use_cache
-            )
+            hidden_state = torch.cat( tensors=[projected_hidden_state, permissions_mask], dim=-1 )  # Dim: (B?, C, d_E)
 
             #
-            hidden_states = layer_outputs[0]
-
-            #
-            if use_cache and present_key_values is not None:
-                #
-                present_key_values.append(layer_outputs[1])
+            hidden_state = layer( hidden_state, attention_mask=attention_causal_mask )
 
         #
-        ### 3. Pass the final hidden states through the language model head to get logits. ###
-        #
-        logits = self.model_lm_head(hidden_states)
+        logits: Tensor = self.model_lm_head( hidden_state )  # type: ignore
 
         #
-        ### 4. Assemble the new cache from all layers. ###
-        #
-        new_past_key_values = tuple(present_key_values) if use_cache and present_key_values is not None else None
-
-        #
-        return logits, new_past_key_values
+        return logits, hidden_state
 
 
 #
@@ -182,27 +125,188 @@ class ChunkedDiffusionSystem:
     #
     def __init__(
         self,
-        model_config: ChunkedDiffusionModelConfig
+        model_config: ChunkedDiffusionModelConfig,
+        mode: str = "simple",
+        dtype: torch.dtype = torch.float32,
+        device: str | torch.device = get_best_device()
     ) -> None:
+
+        #
+        self.dtype: torch.dtype = dtype
+        self.device: str | torch.device = device
 
         #
         self.model: ChunkedDiffusionModel = ChunkedDiffusionModel(
             config=model_config
         )
+        #
+        self.tokenizer: PreTrainedTokenizer = load_tokenizer(model_name=model_config.from_model_name, tokenizer_padding_side=model_config.tokenizer_padding_side)
 
         #
-        self.chunks: list[Chunk] = []
+        self.chunks_documents_names: list[ str ] = []
+        self.chunks_documents_idx: list[int] = []
+        self.chunks: list[ Chunk ] = []
+        #
+        self.current_chunk: Optional[tuple[int, int]] = None
 
 
     #
-    def generate_causal_attention_mask(
-        self,
-        input_ids: Tensor,
-        permissions_mask: Tensor,
-    ) -> Tensor:
+    def create_chunk_from_list_of_tokens(self, chunk_tok_ids: list[int]) -> Chunk:
 
         #
-        ### TODO: ###
+        return Chunk(
+            chunk_length = self.model.config.chunk_length,
+            chunk_global_context_length = self.model.config.chunk_global_context_length,
+            batch_size=None,
+            initial_data=Tensor(chunk_tok_ids),
+            initial_data_permissions_mask=None,
+            nb_permissions_items=self.model.config.permissions_mask_nb_items,
+            padding_token=self.model.config.tokenizer_pad_token,
+            dtype=self.dtype,
+            device=self.device
+        )
+
+
+    #
+    def split_text_of_one_document_in_chunks(self, text: str) -> list[Chunk]:
+
+        #
+        text_chunks: list[Chunk] = []
+
+        #
+        new_line_tok: list[int] = self.tokenizer.encode("\n")  # type: ignore
+
+        #
+        text_sublines: list[str] = []
+
+        #
+        text_lines: list[str] = text.split("\n")
+
+        #
+        line: str
+        #
+        for line in text_lines:
+            #
+            text_sublines += [t + "." for t in line.split(".")]
+
+        #
+        current_chunk_token_ids: list[int] = []
+        current_chunk_nb_tokens: int = 0
+
+        #
+        subline: str
+        #
+        for subline in text_lines:
+
+            #
+            subline_toks: list[int] = self.tokenizer.encode(subline) + new_line_tok  # type: ignore
+            #
+            subline_nb_toks: int = len(subline_toks)
+
+            #
+            ### Case 1: If the current subline fits in the space left of the chunk, add it to it. ###
+            #
+            if current_chunk_nb_tokens + subline_nb_toks <= self.model.config.chunk_length:
+                #
+                current_chunk_token_ids += subline_toks
+                current_chunk_nb_tokens += subline_nb_toks
+
+            #
+            ### Case 2: The current chunk is free, and the current subline is too large, we hard split the subline. ###
+            #
+            elif current_chunk_nb_tokens == 0:
+                #
+                ### TODO: maybe improve here by splitting on spaces instead of just filling each chunks to avoid bad words cuts. ###
+                #
+                while subline_nb_toks >= self.model.config.chunk_length:
+                    #
+                    text_chunks.append(
+                        self.create_chunk_from_list_of_tokens(chunk_tok_ids=subline_toks[:self.model.config.chunk_length])
+                    )
+                    #
+                    subline_toks = subline_toks[self.model.config.chunk_length:]
+                    subline_nb_toks = len(subline_toks)
+                #
+                current_chunk_token_ids += subline_toks
+                current_chunk_nb_tokens += subline_nb_toks
+
+            #
+            ### Case 3: The current chunk just cannot fit the current subline, so we free the create a new chunk with the current subline. ###
+            #
+            else:
+                #
+                text_chunks.append(
+                    self.create_chunk_from_list_of_tokens(chunk_tok_ids=current_chunk_token_ids)
+                )
+                #
+                current_chunk_token_ids = subline_toks
+                current_chunk_nb_tokens = subline_nb_toks
+
+        #
+        return text_chunks
+
+
+    #
+    def split_text_in_chunks(
+        self,
+        text: str,
+        documents: Optional[dict[str, str]] = {},
+    ) -> tuple[list[str], list[int], list[Chunk]]:
+
+        #
+        documents_chunks: dict[str, list[Chunk]] = {}
+
+        #
+        if documents is not None:
+            #
+            documents_chunks = {
+                document_name: self.split_text_of_one_document_in_chunks(text=document_text)
+                for document_name, document_text in documents.items()
+            }
+
+        #
+        text_chunks: list[Chunk] = self.split_text_of_one_document_in_chunks(text=text)
+
+        #
+        chunks_documents: list[str] = []
+        chunks_documents_idx: list[int] = []
+        chunks: list[Chunk] = []
+
+        #
+        chunk: Chunk
+        #
+        for document_idx, document_title in enumerate( documents_chunks ):
+
+            #
+            chunks_documents.append( document_title )
+
+            #
+            for chunk in documents_chunks[document_title]:
+                #
+                chunks_documents_idx.append( document_idx )
+                #
+                chunks.append(chunk)
+
+        #
+        main_document_idx: int = len(chunks_documents)
+        #
+        chunks_documents.append( "main context" )
+        #
+        for chunk in text_chunks:
+            #
+            chunks_documents_idx.append( main_document_idx )
+            #
+            chunks.append(chunk)
+
+        #
+        return chunks_documents, chunks_documents_idx, chunks
+
+
+    #
+    def init_all_chunks_global_context_with_chunk_encoding(self) -> Tensor:
+
+        #
+        ### TODO: for all chunks, intialize them by encoding them. ###
         #
         pass
 
@@ -210,3 +314,74 @@ class ChunkedDiffusionSystem:
         return Tensor()
 
 
+    #
+    def prepare_context_and_masks_for_one_chunk(
+        self,
+        chunk_id: int,
+        with_globals: bool = True
+    ) -> tuple[Tensor, Tensor, Tensor]:  # Returns (context tokens, permissions masks, causal mask)
+
+        #
+        context_tokens: Tensor
+        permissions_mask: Tensor
+
+        #
+        ### With globals. ###
+        #
+        if with_globals:
+            #
+            ### Concatenating in the sequence dimension, whereas there is a batch_size or not. ###
+            #
+            context_tokens = torch.cat( tensors=[
+                self.chunks[chunk_id].chunk_context_data,
+                self.chunks[chunk_id].chunk_global_context_data
+            ], dim = -1 )
+            #
+            permissions_mask = torch.cat( tensors=[
+                self.chunks[chunk_id].permission_mask_context_data,
+                self.chunks[chunk_id].permission_mask_global_context_data
+            ], dim = -2 )
+
+        #
+        ### Without globals. ###
+        #
+        else:
+            #
+            context_tokens = self.chunks[chunk_id].chunk_context_data
+            permissions_mask = self.chunks[chunk_id].permission_mask_context_data
+
+        #
+        ### Compute sequence length (works for batched or unbatched). ###
+        #
+        seq_len: int = permissions_mask.shape[-2]
+
+        #
+        ### Create lower triangular matrix (True where can attend causally) ###
+        #
+        tri: Tensor = torch.tril(torch.ones((seq_len, seq_len), dtype=torch.bool, device=self.device))
+
+        #
+        ### Identify non-hidden positions (first permission > 0.5 means hidden). ###
+        #
+        not_hidden: Tensor = permissions_mask[..., 0] <= 0.5  # Shape: (B?, seq_len)
+
+        #
+        ### Broadcast not_hidden to mask entire src columns for hidden tokens ###
+        ### & combines causal with hidden mask (elementwise AND) ###
+        #
+        ### Batched case. ###
+        #
+        if permissions_mask.ndim == 3:
+            #
+            causal_mask: Tensor = tri[None, :, :] & not_hidden[:, None, :]
+            causal_mask = causal_mask.unsqueeze(1)  # Add head dim: (B, 1, seq, seq)
+        #
+        ### Unbatched case. ###
+        #
+        else:
+            #
+            causal_mask: Tensor = tri & not_hidden[None, :]
+            causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)  # (1, 1, seq, seq)
+
+        #
+        return context_tokens, permissions_mask, causal_mask

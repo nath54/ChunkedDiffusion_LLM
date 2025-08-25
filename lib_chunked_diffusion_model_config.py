@@ -1,8 +1,6 @@
 #
 ### Import Modules. ###
 #
-from typing import Optional
-#
 from transformers import (
     PretrainedConfig
 )
@@ -33,14 +31,19 @@ class ChunkedDiffusionModelConfig:
         #
         ### Tokenizer parameters. ###
         #
-        tokenizer_padding_side: str = "left",
+        tokenizer_padding_side: str = "right",
         #
-        tokenizer_pad_token: Optional[int] = None,
+        ## Tokenizer padding. ##
+        #
+        tokenizer_pad_token: int = 0,
+        tokenizer_chunk_separation_token: int = 1,
+        tokenizer_documents_separation_token: int = 2,
+        tokenizer_document_title_and_content_separation_token: int = 3,
 
         #
         ### **Chunk** parameters. ###
         #
-        ## Non global chunk length, can be masked: `hidden`, `system prompt`, `file_name`, `read_only`, `read_and_write` ##
+        ## Non global chunk length, can be masked: `hidden`, `system_prompt_read_only`, `file_name_read_only`, `document_read_only`, `text_read_only`, `chunk_global_read_only`, `read_and_write_inside_chunk`, `chunk_global_read_and_write`, `global_space_read_and_write` ##
         #
         chunk_length: int = 512,
         #
@@ -52,9 +55,9 @@ class ChunkedDiffusionModelConfig:
         ### **Mask** parameters. ###
         #
         ## Nb items of the mask. ##
-        ## `hidden`, `system prompt`, `file_name`, `read_only`, `read_and_write`, `global_read_and_write` ##
+        ## `hidden`, `system_prompt_read_only`, `file_name_read_only`, `document_read_only`, `text_read_only`, `chunk_global_read_only`, `read_and_write_inside_chunk`, `chunk_global_read_and_write`, `global_space_read_and_write` ##
         #
-        permissions_mask_nb_items: int = 6
+        permissions_mask_nb_items: int = 9
 
     ) -> None:
 
@@ -87,12 +90,15 @@ class ChunkedDiffusionModelConfig:
         #
         self.tokenizer_padding_side: str = tokenizer_padding_side
         #
-        self.tokenizer_pad_token: Optional[int] = tokenizer_pad_token
+        self.tokenizer_pad_token: int = tokenizer_pad_token
+        self.tokenizer_chunk_separation_token: int = tokenizer_chunk_separation_token
+        self.tokenizer_documents_separation_token: int = tokenizer_documents_separation_token
+        self.tokenizer_document_title_and_content_separation_token: int = tokenizer_document_title_and_content_separation_token
 
         #
         ### **Chunk** parameters. ###
         #
-        ## Non global chunk length, can be masked: `hidden`, `system prompt`, `file_name`, `read_only`, `read_and_write` ##
+        ## Non global chunk length, can be masked: `hidden`, `system_prompt_read_only`, `file_name_read_only`, `document_read_only`, `text_read_only`, `chunk_global_read_only`, `read_and_write_inside_chunk`, `chunk_global_read_and_write`, `global_space_read_and_write` ##
         #
         self.chunk_length: int = chunk_length
         #
@@ -104,7 +110,7 @@ class ChunkedDiffusionModelConfig:
         ### **Permissions Mask** parameters. ###
         #
         ## Nb items of the permissions mask. ##
-        ## Permissions values: `hidden`, `system prompt`, `file_name`, `read_only`, `read_and_write`, `global_read_and_write` ##
+        ## Permissions values: `hidden`, `system_prompt_read_only`, `file_name_read_only`, `document_read_only`, `text_read_only`, `chunk_global_read_only`, `read_and_write_inside_chunk`, `chunk_global_read_and_write`, `global_space_read_and_write` ##
         #
         self.permissions_mask_nb_items: int = permissions_mask_nb_items
 
