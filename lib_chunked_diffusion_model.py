@@ -11,6 +11,8 @@ from transformers import PreTrainedModel
 from lib_load_from_hugging_face import load_model
 #
 from lib_chunked_diffusion_model_config import ChunkedDiffusionModelConfig
+#
+from lib_chunks import Chunk
 
 
 #
@@ -32,7 +34,7 @@ class ChunkedDiffusionModel(nn.Module):
         #
         self.projector: nn.Linear = nn.Linear(
             in_features = self.config.from_model_config_hidden_size,
-            out_features = (self.config.from_model_config_hidden_size - self.config.mask_nb_items)
+            out_features = (self.config.from_model_config_hidden_size - self.config.permissions_mask_nb_items)
         )
 
 
@@ -170,3 +172,41 @@ class ChunkedDiffusionModel(nn.Module):
 
         #
         return logits, new_past_key_values
+
+
+#
+### Class for the Full ChunkedDiffusionSystem. ###
+#
+class ChunkedDiffusionSystem:
+
+    #
+    def __init__(
+        self,
+        model_config: ChunkedDiffusionModelConfig
+    ) -> None:
+
+        #
+        self.model: ChunkedDiffusionModel = ChunkedDiffusionModel(
+            config=model_config
+        )
+
+        #
+        self.chunks: list[Chunk] = []
+
+
+    #
+    def generate_causal_attention_mask(
+        self,
+        input_ids: Tensor,
+        permissions_mask: Tensor,
+    ) -> Tensor:
+
+        #
+        ### TODO: ###
+        #
+        pass
+
+        #
+        return Tensor()
+
+

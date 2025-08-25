@@ -1,6 +1,8 @@
 #
 ### Import Modules. ###
 #
+from typing import Optional
+#
 from transformers import (
     PretrainedConfig
 )
@@ -32,13 +34,15 @@ class ChunkedDiffusionModelConfig:
         ### Tokenizer parameters. ###
         #
         tokenizer_padding_side: str = "left",
+        #
+        tokenizer_pad_token: Optional[int] = None,
 
         #
         ### **Chunk** parameters. ###
         #
         ## Non global chunk length, can be masked: `hidden`, `system prompt`, `file_name`, `read_only`, `read_and_write` ##
         #
-        chunk_lenght: int = 512,
+        chunk_length: int = 512,
         #
         ## Global shared context of a chunk, read & write if inside this chunk, else read only. ##
         #
@@ -48,9 +52,9 @@ class ChunkedDiffusionModelConfig:
         ### **Mask** parameters. ###
         #
         ## Nb items of the mask. ##
-        ## `hidden`, `system prompt`, `file_name`, `read_only`, `read_and_write` ##
+        ## `hidden`, `system prompt`, `file_name`, `read_only`, `read_and_write`, `global_read_and_write` ##
         #
-        mask_nb_items: int = 5
+        permissions_mask_nb_items: int = 6
 
     ) -> None:
 
@@ -82,23 +86,25 @@ class ChunkedDiffusionModelConfig:
         ### Tokenizer parameters. ###
         #
         self.tokenizer_padding_side: str = tokenizer_padding_side
+        #
+        self.tokenizer_pad_token: Optional[int] = tokenizer_pad_token
 
         #
         ### **Chunk** parameters. ###
         #
         ## Non global chunk length, can be masked: `hidden`, `system prompt`, `file_name`, `read_only`, `read_and_write` ##
         #
-        self.chunk_lenght: int = chunk_lenght
+        self.chunk_length: int = chunk_length
         #
         ## Global shared context of a chunk, read & write if inside this chunk, else read only. ##
         #
         self.chunk_global_context_length: int = chunk_global_context_length
 
         #
-        ### **Mask** parameters. ###
+        ### **Permissions Mask** parameters. ###
         #
-        ## Nb items of the mask. ##
-        ## `hidden`, `system prompt`, `file_name`, `read_only`, `read_and_write` ##
+        ## Nb items of the permissions mask. ##
+        ## Permissions values: `hidden`, `system prompt`, `file_name`, `read_only`, `read_and_write`, `global_read_and_write` ##
         #
-        self.mask_nb_items: int = mask_nb_items
+        self.permissions_mask_nb_items: int = permissions_mask_nb_items
 

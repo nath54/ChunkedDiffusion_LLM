@@ -1,12 +1,15 @@
 #
 ### Import modules. ###
 #
-from typing import cast
+from typing import cast, Optional
 #
 import os
 import json
 #
+import torch
 from torch import Tensor
+from torch.nn import functional as F
+from torch.optim import Optimizer, AdamW
 #
 from transformers import (
     AutoTokenizer, AutoModel,
@@ -23,13 +26,10 @@ from lib_load_from_hugging_face import load_dataset
 
 
 #
-### Main function. ###
+###
 #
-def main_step1_pretraining() -> None:
+def prepare_dataset() -> tuple[list[str], list[str]]:
 
-    #
-    ### Load dataset to train on. ###
-    #
     #
     train_lst: list[str] = []
     test_lst: list[str] = []
@@ -101,23 +101,247 @@ def main_step1_pretraining() -> None:
             json.dump(obj=cached_data_filtered_dataset, fp=f)
 
     #
-    ### Load LLM Model to train. ###
-    #
-    model_path = 'Alibaba-NLP/gte-large-en-v1.5'
-    tokenizer: PreTrainedTokenizer = cast(PreTrainedTokenizer, AutoTokenizer.from_pretrained(model_path) )  # type: ignore
-    model: PreTrainedModel = cast(PreTrainedModel, AutoModel.from_pretrained(model_path, trust_remote_code=True) )  # type: ignore
+    return train_lst, test_lst
+
+
+#
+###
+#
+class Trainer:
 
     #
-    ### Tokenize the input texts. ###
-    #
-    batch_dict: BatchEncoding = tokenizer(train_lst[0], max_length=8192, padding=True, truncation=True, return_tensors='pt')
+    def __init__(self, encoder_model_path: str = 'Alibaba-NLP/gte-large-en-v1.5') -> None:
 
-    outputs: BaseModelOutputWithPooling = model(**batch_dict)
+        #
+        ### Load dataset to train on. ###
+        #
+        self.train_lst: list[str] = []
+        self.test_lst: list[str] = []
+        #
+        self.train_lst, self.test_lst = prepare_dataset()
+
+        #
+        ### Prepare encoder parent model. ###
+        #
+        self.encoder_tokenizer: PreTrainedTokenizer = cast(PreTrainedTokenizer, AutoTokenizer.from_pretrained(model_path) )  # type: ignore
+        self.encoder_model: PreTrainedModel = cast(PreTrainedModel, AutoModel.from_pretrained(model_path, trust_remote_code=True) )  # type: ignore
+
+        #
+        ### TODO: init the chunked diffusion LLM model. ###
+        #
+        pass
+
+        #
+        ### Training hyper parameters. ###
+        #
+        ## Learning rate and optimizer. ##
+        #
+        self.learning_rate: float = 1e-4
+        #
+        self.optimizer: Optimizer = AdamW(params=[], lr=self.learning_rate)
+        #
+        self.test_each_iterations: int = 100
+
+
     #
-    print(f"DEBUG | outputs = {outputs} | type(outputs) = {type(outputs)}")
-    #
-    if outputs.last_hidden_state is not None:
+    def get_truth_embedding(self, text: str) -> Optional[Tensor]:
+
+        #
+        ### Tokenize the text. ###
+        #
+        batch_dict: BatchEncoding = self.encoder_tokenizer(text, max_length=8192, padding=True, truncation=True, return_tensors='pt')
+        #
+        outputs: BaseModelOutputWithPooling = self.encoder_model(**batch_dict)
+        #
+        if outputs.last_hidden_state is None:
+            #
+            return None
+
         #
         embeddings: Tensor = outputs.last_hidden_state[:, 0]
         #
-        print(f"DEBUG | embeddings = {embeddings}")
+        print(f"DEBUG | embeddings.shape = {embeddings.shape}")
+
+        #
+        return embeddings
+
+
+    #
+    def forward_cdllm_embedding(self, text: str, embedding_context_length: int = 4) -> Tensor:
+
+        #
+        ### TODO: Calculate the embedding with the CDLLM model. ###
+        #
+        pass
+
+        #
+        return Tensor()
+
+
+    #
+    def loss_fn(
+        self,
+        truth_embedding: Tensor,  # Dim: (1, d_E)
+        cdllm_embedding: Tensor   # Dim: (k, d_E)
+    ) -> Tensor:
+        """
+        Calculate the loss based on the distances between a single truth embedding and multiple CDLLM embeddings.
+
+        Args:
+            truth_embedding (Tensor): The ground truth embedding tensor of shape (1, d_E).
+            cdllm_embedding (Tensor): The CDLLM embeddings tensor of shape (k, d_E), where k is the number of embeddings.
+
+        Returns:
+            Tensor: The final loss tensor.
+        """
+
+        #
+        ### Repeat the truth embedding k times to match the shape of cdllm_embedding. ###
+        ### truth_embedding: (1, d_E) -> truth_repeated: (k, d_E) ###
+        #
+        truth_repeated: Tensor = torch.tile(truth_embedding, (cdllm_embedding.shape[0], 1))
+
+        #
+        ### Calculate the Mean Squared Error (MSE) loss for each row. ###
+        ### The reduction is set to 'none' to keep the loss for each sample separately. ###
+        ### The output 'all_distances' will have a shape of (k,). ###
+        #
+        all_distances: Tensor = F.mse_loss(truth_repeated, cdllm_embedding, reduction='none').mean(dim=1)
+
+        #
+        ### Calculate the minimum distance among all the rows. ###
+        ### This finds the closest CDLLM embedding to the truth embedding. ###
+        #
+        min_distance: Tensor = torch.min(all_distances)
+
+        #
+        ### Calculate the mean distance of all the rows. ###
+        ### This provides a holistic view of the average distance across all CDLLM embeddings. ###
+        #
+        mean_distance: Tensor = torch.mean(all_distances)
+
+        #
+        ### The final loss is a combination of the mean and minimum distances. ###
+        ### This encourages both the average of all embeddings and the closest one to be accurate. ###
+        #
+        final_loss: Tensor = mean_distance + min_distance
+
+        #
+        return final_loss
+
+
+    #
+    def get_loss_on_embeddings(self, text: str) -> Optional[Tensor]:
+
+        #
+        ### Get truth embedding. ###
+        #
+        truth_embedding = self.get_truth_embedding(text=text)
+        #
+        if not truth_embedding:
+            #
+            return None
+
+        #
+        ### Forward cdllm embedding. ###
+        #
+        cdllm_embedding: Tensor = self.forward_cdllm_embedding(text=text)
+
+        #
+        ### Calculate loss. ###
+        #
+        loss: Tensor = self.loss_fn(truth_embedding=truth_embedding, cdllm_embedding=cdllm_embedding)
+
+        #
+        return loss
+
+
+    #
+    def test(self) -> float:
+
+        #
+        # TODO: set model in eval mode
+        pass
+
+        #
+        losses: list[float] = []
+
+        #
+        ### Test loop. ###
+        #
+        for _i, text in tqdm( enumerate( self.train_lst ) ):
+
+            #
+            ### Calculate embeddings and get loss. ###
+            #
+            loss: Optional[Tensor] = self.get_loss_on_embeddings(text=text)
+            #
+            if not loss:
+                #
+                continue
+            #
+            losses.append(loss.item())
+
+        #
+        # TODO: set model back in train mode
+        pass
+
+        #
+        return sum(losses) / len(losses) if losses else float("nan")
+
+
+    #
+    def train(self) -> None:
+
+        #
+        # TODO: go to train mode and init values
+        pass
+
+        #
+        test_loss: float = -1
+
+        #
+        ### Training loop. ###
+        #
+        pbar = tqdm(total=len(self.train_lst))
+        #
+        for i, text in enumerate( self.train_lst ):
+
+            # TODO: gradient to zero & other initialisations
+
+            #
+            ### Calculate embeddings and get loss. ###
+            #
+            loss: Optional[Tensor] = self.get_loss_on_embeddings(text=text)
+            #
+            if not loss:
+                #
+                continue
+
+            #
+            ### TODO: Propagate gradients back. ###
+            #
+            pass
+
+            #
+            ### Do the tests. ###
+            #
+            if i % self.test_each_iterations == 0:
+                #
+                test_loss = self.test()
+
+            #
+            pbar.update()
+            #
+            pbar.set_postfix_str(s=f"train loss = {loss.item()} | test loss = {test_loss}")
+
+
+#
+### Main function. ###
+#
+def main_step1_pretraining() -> None:
+
+    #
+    trainer = Trainer()
+    #
+    trainer.train()
