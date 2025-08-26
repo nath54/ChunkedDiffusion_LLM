@@ -500,8 +500,8 @@ class ChunkedDiffusionSystem:
         pass
 
         #
-        context: Tensor = torch.cat( tensors=contexts_tensors, dim=0 )
-        permissions_mask: Tensor = torch.cat( tensors=permissions_tensors, dim=0 )
+        context: Tensor = torch.cat( tensors=contexts_tensors, dim=-1 )
+        permissions_mask: Tensor = torch.cat( tensors=permissions_tensors, dim=-2 )
 
         #
         attention_causal_mask: Tensor = self.prepare_attention_causal_mask_from_permissions_mask( permissions_mask=permissions_mask )
