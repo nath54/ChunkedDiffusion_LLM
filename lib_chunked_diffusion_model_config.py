@@ -22,7 +22,7 @@ class ChunkedDiffusionModelConfig:
         #
         ## Hugging face Model Id (ex: `Qwen/Qwen2.5-1.5B`). ##
         #
-        from_model_name: str = "Qwen/Qwen2.5-1.5B",
+        from_model_name: str = "Qwen/Qwen2.5-0.5B",
         #
         ## Indicates model family (eg: Qwen2, Qwen3, Llama-3.2, ...). ##
         #

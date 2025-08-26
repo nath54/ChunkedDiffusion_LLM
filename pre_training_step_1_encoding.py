@@ -8,6 +8,7 @@ import json
 #
 import torch
 from torch import Tensor
+from torch import nn
 from torch.nn import functional as F
 from torch.optim import Optimizer, AdamW
 #
@@ -127,6 +128,7 @@ class Trainer:
         #
         self.encoder_tokenizer: PreTrainedTokenizer = cast(PreTrainedTokenizer, AutoTokenizer.from_pretrained(encoder_model_path) )  # type: ignore
         self.encoder_model: PreTrainedModel = cast(PreTrainedModel, AutoModel.from_pretrained(encoder_model_path, trust_remote_code=True) )  # type: ignore
+        self.encoder_hidden_size: int = self.encoder_model.config.hidden_size
 
         #
         ### Init the chunked diffusion LLM model. ###
@@ -146,6 +148,18 @@ class Trainer:
         #
         self.test_each_iterations: int = 100
 
+        #
+        ### Random projection Embedding matrixes. ###
+        #
+        self.random_projection: nn.Linear = nn.Linear(
+            in_features=max(self.cdllm.model.config.from_model_config_hidden_size, self.encoder_hidden_size),
+            out_features=min(self.cdllm.model.config.from_model_config_hidden_size, self.encoder_hidden_size),
+            device=self.cdllm.device,
+            dtype=self.cdllm.dtype
+        )
+        #
+        self.mse_loss: nn.MSELoss = nn.MSELoss().to(device=self.cdllm.device)
+
 
     #
     def get_truth_embedding(self, text: str) -> Optional[Tensor]:
@@ -163,8 +177,6 @@ class Trainer:
 
         #
         embeddings: Tensor = outputs.last_hidden_state[:, 0]
-        #
-        print(f"DEBUG | embeddings.shape = {embeddings.shape}")
 
         #
         return embeddings
@@ -182,8 +194,8 @@ class Trainer:
     #
     def loss_fn(
         self,
-        truth_embedding: Tensor,  # Dim: (1, d_E)
-        cdllm_embedding: Tensor   # Dim: (k, d_E)
+        truth_embedding: Tensor,  # Dim: (1, d_E1)
+        cdllm_embedding: Tensor   # Dim: (k, d_E2)
     ) -> Tensor:
         """
         Calculate the loss based on the distances between a single truth embedding and multiple CDLLM embeddings.
@@ -195,6 +207,30 @@ class Trainer:
         Returns:
             Tensor: The final loss tensor.
         """
+
+        #
+        ### Ensure correct device. ###
+        #
+        cdllm_embedding = cdllm_embedding.to(device=self.cdllm.device)
+        truth_embedding = truth_embedding.to(device=self.cdllm.device)
+
+        #
+        ### Case if the embeddings dimensions are not good. ###
+        #
+        if truth_embedding.shape[-1] != cdllm_embedding.shape[-1]:
+
+            #
+            if truth_embedding.shape[-1] < cdllm_embedding.shape[-1]:
+                #
+                cdllm_embedding = self.random_projection(cdllm_embedding).to(device=self.cdllm.device)
+            #
+            else:
+                #
+                truth_embedding = self.random_projection(truth_embedding).to(device=self.cdllm.device)
+
+        #
+        ### Case where the embeddings dimensions are good. ###
+        #
 
         #
         ### Repeat the truth embedding k times to match the shape of cdllm_embedding. ###

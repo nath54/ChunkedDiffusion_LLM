@@ -9,6 +9,8 @@ from torch import nn
 #
 from transformers import PreTrainedModel, PreTrainedTokenizer
 #
+from transformers.models.qwen2.modeling_qwen2 import Qwen2RotaryEmbedding
+#
 from lib_load_from_hugging_face import load_model, load_tokenizer
 from lib_chunked_diffusion_model_config import ChunkedDiffusionModelConfig
 from lib_chunks import Chunk
@@ -22,11 +24,19 @@ from lib_get_device import get_best_device
 class ChunkedDiffusionModel(nn.Module):
 
     #
-    def __init__(self, config: ChunkedDiffusionModelConfig) -> None:
+    def __init__(
+        self,
+        config: ChunkedDiffusionModelConfig,
+        dtype: torch.dtype = torch.float32,
+        device: str | torch.device = get_best_device(),
+    ) -> None:
 
         #
         super().__init__()  # type: ignore
 
+        #
+        self.dtype: torch.dtype = dtype
+        self.device: str | torch.device = device
         #
         self.config: ChunkedDiffusionModelConfig = config
         #
@@ -36,10 +46,13 @@ class ChunkedDiffusionModel(nn.Module):
         self.model_transformer_layers: Optional[nn.ModuleList] = None  # Will be initialized with prepare_model()
         self.model_lm_head: Optional[nn.Module] = None  # Will be initialized with prepare_model()
         #
-        self.projector: nn.Linear = nn.Linear(
+        self.model_rotary_embedding: Qwen2RotaryEmbedding = Qwen2RotaryEmbedding(config=self.config.from_model_config, device=self.device)  # type: ignore
+        #
+        self.projector_intern: nn.Linear = nn.Linear(
             in_features = self.config.from_model_config_hidden_size,
             out_features = (self.config.from_model_config_hidden_size - self.config.permissions_mask_nb_items)
         )
+
         #
         self.prepare_model()
 
@@ -48,7 +61,7 @@ class ChunkedDiffusionModel(nn.Module):
     def parameters(self, recurse: bool = True) -> Iterator[nn.Parameter]:
 
         #
-        return iter( list(self.projector.parameters(recurse=recurse)) + list(self.model.parameters(recurse=recurse)) )
+        return iter( list(self.projector_intern.parameters(recurse=recurse)) + list(self.model.parameters(recurse=recurse)) + list(self.model_rotary_embedding.parameters()) )
 
 
     #
@@ -100,25 +113,69 @@ class ChunkedDiffusionModel(nn.Module):
         self,
         input_ids: Tensor,  # Dim: (B?, C, d_E)
         permissions_mask: Tensor,  # Dim: (B?, C, k)
-        attention_causal_mask: Tensor
+        attention_causal_mask: Tensor,
+        use_cache: bool = False
     ) -> tuple[Tensor, Tensor]:
+
+        #
+        ### Add batch dim if missing (makes inputs consistently 3D/4D). ###
+        #
+        if input_ids.ndim == 1:
+            #
+            input_ids = input_ids.unsqueeze(0)
+        #
+        if permissions_mask.ndim == 2:
+            #
+            permissions_mask = permissions_mask.unsqueeze(0)
 
         #
         hidden_state: Tensor = self.model_embedding_layer(input_ids)  # type: ignore
         # Dim: (B?, C, d_E)
 
         #
+        ### Create position_ids: standard 0 to seq-1, expanded for batch ###
+        ### Use shape[1] for seq_len (batch-safe) ###
+        #
+        seq_len: int= hidden_state.shape[1]
+        #
+        position_ids: Tensor = torch.arange(seq_len, dtype=torch.long, device=self.device).unsqueeze(0).expand(hidden_state.shape[0], seq_len)
+        #
+        position_embeddings: tuple[Tensor, Tensor] = self.model_rotary_embedding(x=hidden_state, position_ids=position_ids)
+
+        #
         for layer in self.model_transformer_layers:  # type: ignore
 
             #
-            projected_hidden_state: Tensor = self.projector( hidden_state )
+            projected_hidden_state: Tensor = self.projector_intern( hidden_state )
             # Dim: (B?, C, d_E - k)
 
             #
             hidden_state = torch.cat( tensors=[projected_hidden_state, permissions_mask], dim=-1 )  # Dim: (B?, C, d_E)
 
             #
-            hidden_state = layer( hidden_state, attention_mask=attention_causal_mask )
+            ### Pass position_ids to layer; also fix mask polarity/dtype for SDPA. ###
+            ### True now = masked (cannot attend) ###
+            #
+            # attn_mask = (~attention_causal_mask).to(dtype=torch.bool)
+            attn_mask: Tensor = (1.0 - attention_causal_mask.to(self.dtype)) * torch.finfo(self.dtype).min  # type: ignore
+
+            #
+            ### [0] because layer returns tuple (hidden, ...) ###
+            #
+            hidden_state = layer(
+                hidden_state,
+                attention_mask=attn_mask,
+                position_ids=position_ids,
+                position_embeddings=position_embeddings,
+                use_cache=use_cache
+            )[0]
+
+            #
+            ### To fix bug that removes the batch dimension. ###
+            #
+            if hidden_state.ndim == 2:
+                #
+                hidden_state = hidden_state.unsqueeze(0)
 
         #
         logits: Tensor = self.model_lm_head( hidden_state )  # type: ignore
@@ -148,7 +205,7 @@ class ChunkedDiffusionSystem:
         #
         self.model: ChunkedDiffusionModel = ChunkedDiffusionModel(
             config=model_config
-        )
+        ).to(device=self.device)
         #
         self.tokenizer: PreTrainedTokenizer = load_tokenizer(model_name=model_config.from_model_name, tokenizer_padding_side=model_config.tokenizer_padding_side)
 
@@ -190,9 +247,6 @@ class ChunkedDiffusionSystem:
         text_chunks: list[Chunk] = []
 
         #
-        new_line_tok: list[int] = self.tokenizer.encode("\n")  # type: ignore
-
-        #
         text_sublines: list[str] = []
 
         #
@@ -203,7 +257,7 @@ class ChunkedDiffusionSystem:
         #
         for line in text_lines:
             #
-            text_sublines += [t + "." for t in line.split(".")]
+            text_sublines += [t + "." for t in (line + "\n").split(".")]
 
         #
         current_chunk_token_ids: list[int] = []
@@ -212,10 +266,10 @@ class ChunkedDiffusionSystem:
         #
         subline: str
         #
-        for subline in text_lines:
+        for subline in text_sublines:
 
             #
-            subline_toks: list[int] = self.tokenizer.encode(subline) + new_line_tok  # type: ignore
+            subline_toks: list[int] = self.tokenizer.encode(subline)  # type: ignore
             #
             subline_nb_toks: int = len(subline_toks)
 
@@ -257,6 +311,15 @@ class ChunkedDiffusionSystem:
                 #
                 current_chunk_token_ids = subline_toks
                 current_chunk_nb_tokens = subline_nb_toks
+
+        #
+        ### Last chunk if not empty. ###
+        #
+        if current_chunk_token_ids:
+            #
+            text_chunks.append(
+                self.create_chunk_from_list_of_tokens(chunk_tok_ids=current_chunk_token_ids, override_chunk_global_lenght=override_chunk_global_lenght)
+            )
 
         #
         return text_chunks
@@ -410,7 +473,19 @@ class ChunkedDiffusionSystem:
         context_tokens, permissions_mask, causal_mask = self.prepare_context_and_masks_for_one_chunk(chunk=chunk, with_globals=True)
 
         #
-        globals_idx: Tensor = ( permissions_mask[ :, self.model.config.permissions_mask_indexes["chunk_global_read_and_write"] ] > 0.5 )
+        if permissions_mask.ndim == 2:
+            #
+            globals_idx: Tensor = ( permissions_mask[ :, self.model.config.permissions_mask_indexes["chunk_global_read_and_write"] ] > 0.5 )
+        #
+        elif permissions_mask.ndim == 3:
+            #
+            ### Now batch-safe (B, seq). ###
+            #
+            globals_idx = (permissions_mask[:, :, self.model.config.permissions_mask_indexes["chunk_global_read_and_write"]] > 0.5)
+        #
+        else:
+            #
+            raise UserWarning(f"Bad permissions_mask ndim = {permissions_mask.ndim}")
 
         #
         _logits, hidden_states = self.model.forward(
@@ -418,6 +493,11 @@ class ChunkedDiffusionSystem:
             permissions_mask=permissions_mask,
             attention_causal_mask=causal_mask
         )
+
+        #
+        if globals_idx.ndim == 1:
+            #
+            globals_idx = globals_idx.unsqueeze(0)
 
         #
         return hidden_states[globals_idx]
