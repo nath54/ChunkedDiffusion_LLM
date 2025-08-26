@@ -25,6 +25,9 @@ class ChunkedDiffusionModel(nn.Module):
     def __init__(self, config: ChunkedDiffusionModelConfig) -> None:
 
         #
+        super().__init__()  # type: ignore
+
+        #
         self.config: ChunkedDiffusionModelConfig = config
         #
         self.model: PreTrainedModel = load_model(model_name=self.config.from_model_name)

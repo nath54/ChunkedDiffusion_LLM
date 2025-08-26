@@ -83,7 +83,7 @@ class ChunkedDiffusionModelConfig:
         ## From model useful parameters values. ##
         #
         self.from_model_config_hidden_size: int = self.from_model_config.hidden_size  # type: ignore
-        self.from_model_config_voc_length: int = self.from_model_config.vocab_length  # type: ignore
+        self.from_model_config_voc_length: int = self.from_model_config.vocab_size  # type: ignore
 
         #
         ### Tokenizer parameters. ###

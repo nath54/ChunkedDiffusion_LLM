@@ -239,7 +239,7 @@ class Trainer:
         #
         truth_embedding = self.get_truth_embedding(text=text)
         #
-        if not truth_embedding:
+        if truth_embedding is None:
             #
             return None
 
