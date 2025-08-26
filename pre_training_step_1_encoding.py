@@ -29,7 +29,7 @@ from lib_chunked_diffusion_model import ChunkedDiffusionSystem
 
 
 #
-###
+### Helper function to prepare the training dataset. ###
 #
 def prepare_dataset() -> tuple[list[str], list[str]]:
 
@@ -108,7 +108,7 @@ def prepare_dataset() -> tuple[list[str], list[str]]:
 
 
 #
-###
+### Trainer Class for training Chunk's initial embeddings. ###
 #
 class Trainer:
 
@@ -398,6 +398,11 @@ class Trainer:
 def main_step1_pretraining() -> None:
 
     #
+    ### Create the trainer. ###
+    #
     trainer = Trainer()
     #
+    ### Start the training. ###
+    #
     trainer.train()
+
