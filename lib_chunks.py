@@ -67,7 +67,7 @@ def set_matrix_initial_data(destination: Tensor, source: Tensor) -> Tensor:
             destination[0, :source.shape[0], :source.shape[1], :source.shape[2]] = source
 
     #
-    elif source.ndim == 3:
+    elif source.ndim == 4:
 
         #
         if destination.ndim == 4:
@@ -79,6 +79,19 @@ def set_matrix_initial_data(destination: Tensor, source: Tensor) -> Tensor:
 
 
 #
+###
+#
+def create_permission_vector(nb_permissions_items: int, permission_item: int, dtype: torch.dtype, device: str | torch.device) -> Tensor:
+
+    #
+    v: Tensor = torch.zeros( (1, nb_permissions_items), dtype=dtype, device=device )
+    v[0, permission_item] = 1
+
+    #
+    return v
+
+
+#
 ### Chunk Class. ###
 #
 class Chunk:
@@ -86,12 +99,11 @@ class Chunk:
     #
     def __init__(
         self,
+        permissions_items: dict[str, int],
         chunk_length: int = 512,
         chunk_global_context_length: int = 5,
-        batch_size: Optional[int] = None,
         initial_data: Optional[Tensor] = None,
         initial_data_permissions_mask: Optional[Tensor] = None,
-        nb_permissions_items: int = 9,
         padding_token: int = 0,
         dtype: torch.dtype = torch.float32,
         device: str | torch.device = get_best_device()
@@ -103,7 +115,8 @@ class Chunk:
         #
         self.padding_token: int = padding_token
         #
-        self.nb_permissions_items: int = nb_permissions_items
+        self.permissions_items: dict[str, int] = permissions_items
+        self.nb_permissions_items: int = len(permissions_items)
 
         #
         self.chunk_length: int = chunk_length
@@ -113,18 +126,10 @@ class Chunk:
         ### Prepare Tensor Shapes ###
         #
         self.chunk_context_shape: tuple[int, ...] = (self.chunk_length,)
-        self.permissions_mask_context_shape: tuple[int, ...] = (self.chunk_length, nb_permissions_items)
+        self.permissions_mask_context_shape: tuple[int, ...] = (self.chunk_length, self.nb_permissions_items)
         #
         self.chunk_global_context_shape: tuple[int, ...] = (self.chunk_global_context_length,)
-        self.permissions_mask_global_context_shape: tuple[int, ...] = (self.chunk_global_context_length, nb_permissions_items)
-        #
-        if batch_size is not None:
-            #
-            self.chunk_context_shape = (batch_size, chunk_length,)
-            self.permissions_mask_context_shape = (batch_size, chunk_length, nb_permissions_items)
-            #
-            self.chunk_global_context_shape = (batch_size, self.chunk_global_context_length,)
-            self.permissions_mask_global_context_shape = (batch_size, self.chunk_global_context_length, nb_permissions_items)
+        self.permissions_mask_global_context_shape: tuple[int, ...] = (self.chunk_global_context_length, self.nb_permissions_items)
 
         #
         ### Create chunk context data. ###
@@ -152,15 +157,6 @@ class Chunk:
             device=self.device
         )
         #
-        self.permission_mask_context_data
-        #
-        ### Fill permissions mask for context data with initial data if provided. ###
-        #
-        if initial_data_permissions_mask is not None:
-            #
-            self.permission_mask_context_data = set_matrix_initial_data(destination=self.chunk_context_data, source=initial_data_permissions_mask)
-
-        #
         ### Create chunk global context data. ###
         #
         self.chunk_global_context_data: Tensor = torch.full(
@@ -170,7 +166,7 @@ class Chunk:
             device=self.device
         )
         #
-        ### Create permissions mask for chunk context data. ###
+        ### Create permissions mask for chunk global context data. ###
         #
         self.permission_mask_global_context_data: Tensor = torch.full(
             size=self.permissions_mask_global_context_shape,
@@ -182,6 +178,24 @@ class Chunk:
         #
         ### Set padding tokens hidden. ###
         #
-        permission_hidden: Tensor = Tensor([1] + [0] * self.nb_permissions_items)
+        permission_hidden: Tensor = create_permission_vector(nb_permissions_items = self.nb_permissions_items, permission_item = self.permissions_items["hidden"], dtype = self.dtype, device = self.device)
+        permission_read_and_write_inside_chunk: Tensor = create_permission_vector(nb_permissions_items = self.nb_permissions_items, permission_item = self.permissions_items["chunk_inside_read_and_write"], dtype = self.dtype, device = self.device)
+        permission_read_and_write_global_chunk: Tensor = create_permission_vector(nb_permissions_items = self.nb_permissions_items, permission_item = self.permissions_items["chunk_global_read_and_write"], dtype = self.dtype, device = self.device)
         #
-        # TODO: set padding tokens hidden.
+        idx_permissions_hidden: Tensor = self.chunk_context_data[:] == self.padding_token
+        #
+        ## `~` is the logical `not` operator. ##
+        #
+        idx_permissions_normal: Tensor = ( ~idx_permissions_hidden )
+        #
+        self.permission_mask_context_data[idx_permissions_hidden] = permission_hidden
+        self.permission_mask_context_data[idx_permissions_normal] = permission_read_and_write_inside_chunk
+        #
+        self.permission_mask_global_context_data[:] = permission_read_and_write_global_chunk
+
+        #
+        ### Fill permissions mask for context data with initial data if provided. ###
+        #
+        if initial_data_permissions_mask is not None:
+            #
+            self.permission_mask_context_data = set_matrix_initial_data(destination=self.permission_mask_context_data, source=initial_data_permissions_mask)

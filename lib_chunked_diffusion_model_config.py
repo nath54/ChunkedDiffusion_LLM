@@ -113,4 +113,16 @@ class ChunkedDiffusionModelConfig:
         ## Permissions values: `hidden`, `system_prompt_read_only`, `file_name_read_only`, `document_read_only`, `text_read_only`, `chunk_global_read_only`, `read_and_write_inside_chunk`, `chunk_global_read_and_write`, `global_space_read_and_write` ##
         #
         self.permissions_mask_nb_items: int = permissions_mask_nb_items
+        #
+        self.permissions_mask_indexes: dict[str, int] = {
+            "hidden": 0,
+            "system_prompt_read_only": 1,
+            "file_name_read_only": 2,
+            "document_read_only": 3,
+            "text_read_only": 4,
+            "chunk_global_read_only": 5,
+            "chunk_inside_read_and_write": 6,
+            "chunk_global_read_and_write": 7,
+            "global_space_read_and_write": 8
+        }
 

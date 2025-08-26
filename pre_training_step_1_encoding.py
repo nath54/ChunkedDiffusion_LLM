@@ -23,6 +23,8 @@ from datasets import Dataset  # type: ignore
 from tqdm import tqdm  # type: ignore
 #
 from lib_load_from_hugging_face import load_dataset
+from lib_chunked_diffusion_model_config import ChunkedDiffusionModelConfig
+from lib_chunked_diffusion_model import ChunkedDiffusionSystem
 
 
 #
@@ -127,9 +129,11 @@ class Trainer:
         self.encoder_model: PreTrainedModel = cast(PreTrainedModel, AutoModel.from_pretrained(model_path, trust_remote_code=True) )  # type: ignore
 
         #
-        ### TODO: init the chunked diffusion LLM model. ###
+        ### Init the chunked diffusion LLM model. ###
         #
-        pass
+        self.cdllm: ChunkedDiffusionSystem = ChunkedDiffusionSystem(
+            model_config=ChunkedDiffusionModelConfig()
+        )
 
         #
         ### Training hyper parameters. ###
@@ -170,12 +174,9 @@ class Trainer:
     def forward_cdllm_embedding(self, text: str, embedding_context_length: int = 4) -> Tensor:
 
         #
-        ### TODO: Calculate the embedding with the CDLLM model. ###
+        ### Calculate the embedding with the CDLLM model. ###
         #
-        pass
-
-        #
-        return Tensor()
+        return self.cdllm.simple_encode_text(text=text, encoding_length = embedding_context_length)
 
 
     #
@@ -294,8 +295,7 @@ class Trainer:
     def train(self) -> None:
 
         #
-        # TODO: go to train mode and init values
-        pass
+        self.cdllm.model.train()
 
         #
         test_loss: float = -1

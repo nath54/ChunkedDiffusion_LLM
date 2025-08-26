@@ -1,7 +1,7 @@
 #
 ### Import Modules. ###
 #
-from typing import Optional
+from typing import Optional, Iterator
 #
 import torch
 from torch import Tensor
@@ -39,6 +39,13 @@ class ChunkedDiffusionModel(nn.Module):
         )
         #
         self.prepare_model()
+
+
+    #
+    def parameters(self, recurse: bool = True) -> Iterator[nn.Parameter]:
+
+        #
+        return iter( list(self.projector.parameters(recurse=recurse)) + list(self.model.parameters(recurse=recurse)) )
 
 
     #
@@ -151,16 +158,22 @@ class ChunkedDiffusionSystem:
 
 
     #
-    def create_chunk_from_list_of_tokens(self, chunk_tok_ids: list[int]) -> Chunk:
+    def parameters(self, recurse: bool = True) -> Iterator[nn.Parameter]:
+
+        #
+        return self.model.parameters(recurse=recurse)
+
+
+    #
+    def create_chunk_from_list_of_tokens(self, chunk_tok_ids: list[int], override_chunk_global_lenght: Optional[int] = None) -> Chunk:
 
         #
         return Chunk(
+            permissions_items=self.model.config.permissions_mask_indexes,
             chunk_length = self.model.config.chunk_length,
-            chunk_global_context_length = self.model.config.chunk_global_context_length,
-            batch_size=None,
-            initial_data=Tensor(chunk_tok_ids),
+            chunk_global_context_length = override_chunk_global_lenght if override_chunk_global_lenght is not None else self.model.config.chunk_global_context_length,
+            initial_data=torch.tensor(chunk_tok_ids, dtype=torch.int64, device=self.device),
             initial_data_permissions_mask=None,
-            nb_permissions_items=self.model.config.permissions_mask_nb_items,
             padding_token=self.model.config.tokenizer_pad_token,
             dtype=self.dtype,
             device=self.device
@@ -168,7 +181,7 @@ class ChunkedDiffusionSystem:
 
 
     #
-    def split_text_of_one_document_in_chunks(self, text: str) -> list[Chunk]:
+    def split_text_of_one_document_in_chunks(self, text: str, override_chunk_global_lenght: Optional[int] = None) -> list[Chunk]:
 
         #
         text_chunks: list[Chunk] = []
@@ -221,7 +234,7 @@ class ChunkedDiffusionSystem:
                 while subline_nb_toks >= self.model.config.chunk_length:
                     #
                     text_chunks.append(
-                        self.create_chunk_from_list_of_tokens(chunk_tok_ids=subline_toks[:self.model.config.chunk_length])
+                        self.create_chunk_from_list_of_tokens(chunk_tok_ids=subline_toks[:self.model.config.chunk_length], override_chunk_global_lenght=override_chunk_global_lenght)
                     )
                     #
                     subline_toks = subline_toks[self.model.config.chunk_length:]
@@ -236,7 +249,7 @@ class ChunkedDiffusionSystem:
             else:
                 #
                 text_chunks.append(
-                    self.create_chunk_from_list_of_tokens(chunk_tok_ids=current_chunk_token_ids)
+                    self.create_chunk_from_list_of_tokens(chunk_tok_ids=current_chunk_token_ids, override_chunk_global_lenght=override_chunk_global_lenght)
                 )
                 #
                 current_chunk_token_ids = subline_toks
@@ -250,7 +263,7 @@ class ChunkedDiffusionSystem:
     def split_text_in_chunks(
         self,
         text: str,
-        documents: Optional[dict[str, str]] = {},
+        documents: Optional[dict[str, str]] = None,
     ) -> tuple[list[str], list[int], list[Chunk]]:
 
         #
@@ -317,7 +330,7 @@ class ChunkedDiffusionSystem:
     #
     def prepare_context_and_masks_for_one_chunk(
         self,
-        chunk_id: int,
+        chunk: Chunk,
         with_globals: bool = True
     ) -> tuple[Tensor, Tensor, Tensor]:  # Returns (context tokens, permissions masks, causal mask)
 
@@ -333,13 +346,13 @@ class ChunkedDiffusionSystem:
             ### Concatenating in the sequence dimension, whereas there is a batch_size or not. ###
             #
             context_tokens = torch.cat( tensors=[
-                self.chunks[chunk_id].chunk_context_data,
-                self.chunks[chunk_id].chunk_global_context_data
+                chunk.chunk_context_data,
+                chunk.chunk_global_context_data
             ], dim = -1 )
             #
             permissions_mask = torch.cat( tensors=[
-                self.chunks[chunk_id].permission_mask_context_data,
-                self.chunks[chunk_id].permission_mask_global_context_data
+                chunk.permission_mask_context_data,
+                chunk.permission_mask_global_context_data
             ], dim = -2 )
 
         #
@@ -347,8 +360,8 @@ class ChunkedDiffusionSystem:
         #
         else:
             #
-            context_tokens = self.chunks[chunk_id].chunk_context_data
-            permissions_mask = self.chunks[chunk_id].permission_mask_context_data
+            context_tokens = chunk.chunk_context_data
+            permissions_mask = chunk.permission_mask_context_data
 
         #
         ### Compute sequence length (works for batched or unbatched). ###
@@ -363,7 +376,7 @@ class ChunkedDiffusionSystem:
         #
         ### Identify non-hidden positions (first permission > 0.5 means hidden). ###
         #
-        not_hidden: Tensor = permissions_mask[..., 0] <= 0.5  # Shape: (B?, seq_len)
+        not_hidden: Tensor = permissions_mask[..., self.model.config.permissions_mask_indexes["hidden"]] <= 0.5  # Shape: (B?, seq_len)
 
         #
         ### Broadcast not_hidden to mask entire src columns for hidden tokens ###
@@ -385,3 +398,60 @@ class ChunkedDiffusionSystem:
 
         #
         return context_tokens, permissions_mask, causal_mask
+
+
+    #
+    def encode_one_chunk(self, chunk: Chunk) -> Tensor:
+
+        #
+        context_tokens, permissions_mask, causal_mask = self.prepare_context_and_masks_for_one_chunk(chunk=chunk, with_globals=True)
+
+        #
+        globals_idx: Tensor = ( permissions_mask[ :, self.model.config.permissions_mask_indexes["chunk_global_read_and_write"] ] > 0.5 )
+
+        #
+        _logits, hidden_states = self.model.forward(
+            input_ids=context_tokens,
+            permissions_mask=permissions_mask,
+            attention_causal_mask=causal_mask
+        )
+
+        #
+        return hidden_states[globals_idx]
+
+
+    #
+    def simple_encode_text(self, text: str, encoding_length: Optional[int] = None) -> Tensor:
+
+        #
+        chunks: list[Chunk] = self.split_text_of_one_document_in_chunks(text=text, override_chunk_global_lenght=encoding_length)
+
+        #
+        chunks_encoding: list[Tensor] = []
+
+        #
+        for chunk in chunks:
+
+            #
+            chunks_encoding.append(
+                self.encode_one_chunk( chunk=chunk )
+            )
+
+        #
+        if not chunks_encoding:
+            #
+            raise UserWarning(f"Error: no chunks={chunks} | chunks_encoding={chunks_encoding} for input text=`{text}`")
+
+        #
+        final_embedding_tensor: Tensor = chunks_encoding[0]
+        #
+        for chunk in chunks_encoding[1:]:
+            #
+            final_embedding_tensor += chunk
+
+        #
+        final_embedding_tensor /= float( len(chunks_encoding) )
+
+        #
+        return final_embedding_tensor
+
