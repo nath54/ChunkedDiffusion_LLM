@@ -233,7 +233,7 @@ class ChunkedDiffusionModel(nn.Module):
 
 
     #
-    def diffuse(
+    def diffuse_one_step(
         self,
         input_hidden_state: Tensor,
         permissions_mask: Tensor,
