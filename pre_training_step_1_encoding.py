@@ -125,8 +125,8 @@ class Trainer:
         #
         ### Prepare encoder parent model. ###
         #
-        self.encoder_tokenizer: PreTrainedTokenizer = cast(PreTrainedTokenizer, AutoTokenizer.from_pretrained(model_path) )  # type: ignore
-        self.encoder_model: PreTrainedModel = cast(PreTrainedModel, AutoModel.from_pretrained(model_path, trust_remote_code=True) )  # type: ignore
+        self.encoder_tokenizer: PreTrainedTokenizer = cast(PreTrainedTokenizer, AutoTokenizer.from_pretrained(encoder_model_path) )  # type: ignore
+        self.encoder_model: PreTrainedModel = cast(PreTrainedModel, AutoModel.from_pretrained(encoder_model_path, trust_remote_code=True) )  # type: ignore
 
         #
         ### Init the chunked diffusion LLM model. ###
@@ -142,7 +142,7 @@ class Trainer:
         #
         self.learning_rate: float = 1e-4
         #
-        self.optimizer: Optimizer = AdamW(params=[], lr=self.learning_rate)
+        self.optimizer: Optimizer = AdamW(params=self.cdllm.parameters(), lr=self.learning_rate)
         #
         self.test_each_iterations: int = 100
 
@@ -261,8 +261,9 @@ class Trainer:
     def test(self) -> float:
 
         #
-        # TODO: set model in eval mode
-        pass
+        ### Set model to evaluation mode. ###
+        #
+        self.cdllm.model.eval()
 
         #
         losses: list[float] = []
@@ -270,22 +271,25 @@ class Trainer:
         #
         ### Test loop. ###
         #
-        for _i, text in tqdm( enumerate( self.train_lst ) ):
+        with torch.no_grad():  # Disable gradient computation for testing
+            #
+            for _i, text in tqdm(enumerate(self.test_lst), desc="Testing..."):
 
-            #
-            ### Calculate embeddings and get loss. ###
-            #
-            loss: Optional[Tensor] = self.get_loss_on_embeddings(text=text)
-            #
-            if not loss:
                 #
-                continue
-            #
-            losses.append(loss.item())
+                ### Calculate embeddings and get loss. ###
+                #
+                loss: Optional[Tensor] = self.get_loss_on_embeddings(text=text)
+                #
+                if not loss:
+                    #
+                    continue
+                #
+                losses.append(loss.item())
 
         #
-        # TODO: set model back in train mode
-        pass
+        ### Set model back to train mode. ###
+        #
+        self.cdllm.model.train()
 
         #
         return sum(losses) / len(losses) if losses else float("nan")
@@ -303,11 +307,14 @@ class Trainer:
         #
         ### Training loop. ###
         #
-        pbar = tqdm(total=len(self.train_lst))
+        pbar = tqdm(total=len(self.train_lst), desc="Training...")
         #
-        for i, text in enumerate( self.train_lst ):
+        for i, text in enumerate(self.train_lst):
 
-            # TODO: gradient to zero & other initialisations
+            #
+            ### Zero gradients before computing new ones. ###
+            #
+            self.optimizer.zero_grad()
 
             #
             ### Calculate embeddings and get loss. ###
@@ -316,12 +323,14 @@ class Trainer:
             #
             if not loss:
                 #
+                print(f"Warning: Skipping sample {i} due to invalid embeddings.")
                 continue
 
             #
-            ### TODO: Propagate gradients back. ###
+            ### Backpropagate gradients and update model weights. ###
             #
-            pass
+            loss.backward()  # type: ignore
+            self.optimizer.step()
 
             #
             ### Do the tests. ###
