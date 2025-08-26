@@ -1,6 +1,10 @@
 # Chunked Diffusion LLM
 
-A novel architecture implementing long context management with chunks, permission-based attention control, and textual diffusion in embedding space.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python Version](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://www.python.org)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-orange.svg)](https://pytorch.org)
+
+**Chunked Diffusion LLM** is an innovative machine learning project exploring a novel architecture for large language models (LLMs). It introduces chunk-based context management, permissions masks for fine-grained attention control, and a textual diffusion approach in the embedding space. The project is in its early stages, with the first pre-training step implemented, and is designed for extensibility and experimentation.
 
 ## Overview
 
