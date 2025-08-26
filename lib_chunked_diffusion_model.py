@@ -13,9 +13,22 @@ from transformers.models.qwen2.modeling_qwen2 import Qwen2RotaryEmbedding
 #
 from lib_load_from_hugging_face import load_model, load_tokenizer
 from lib_chunked_diffusion_model_config import ChunkedDiffusionModelConfig
-from lib_chunks import Chunk
+from lib_chunks import Chunk, create_permission_vector
 from lib_get_device import get_best_device
 
+
+#
+def applst(lst1: list[Tensor], lst2: list[Tensor], itm1: Tensor, itm2: Tensor) -> None:
+    #
+    lst1.append(itm1)
+    lst2.append(itm2)
+
+
+#
+def addlst(lst1: list[Tensor], lst2: list[Tensor], itms1: list[Tensor], itms2: list[Tensor]) -> None:
+    #
+    lst1 += itms1
+    lst2 += itms2
 
 
 #
@@ -109,38 +122,26 @@ class ChunkedDiffusionModel(nn.Module):
 
 
     #
-    def forward(
+    def forward_from_hidden_state(
         self,
-        input_ids: Tensor,  # Dim: (B?, C, d_E)
+        hidden_state: Tensor,   # Dim: (B?, C, d_E)
         permissions_mask: Tensor,  # Dim: (B?, C, k)
         attention_causal_mask: Tensor,
-        use_cache: bool = False
+        position_ids: Tensor,
+        position_embeddings: tuple[Tensor, Tensor],
+        use_cache: bool = False,
     ) -> tuple[Tensor, Tensor]:
 
         #
         ### Add batch dim if missing (makes inputs consistently 3D/4D). ###
         #
-        if input_ids.ndim == 1:
+        if hidden_state.ndim == 2:
             #
-            input_ids = input_ids.unsqueeze(0)
+            hidden_state = hidden_state.unsqueeze(0)
         #
         if permissions_mask.ndim == 2:
             #
             permissions_mask = permissions_mask.unsqueeze(0)
-
-        #
-        hidden_state: Tensor = self.model_embedding_layer(input_ids)  # type: ignore
-        # Dim: (B?, C, d_E)
-
-        #
-        ### Create position_ids: standard 0 to seq-1, expanded for batch ###
-        ### Use shape[1] for seq_len (batch-safe) ###
-        #
-        seq_len: int= hidden_state.shape[1]
-        #
-        position_ids: Tensor = torch.arange(seq_len, dtype=torch.long, device=self.device).unsqueeze(0).expand(hidden_state.shape[0], seq_len)
-        #
-        position_embeddings: tuple[Tensor, Tensor] = self.model_rotary_embedding(x=hidden_state, position_ids=position_ids)
 
         #
         for layer in self.model_transformer_layers:  # type: ignore
@@ -184,6 +185,92 @@ class ChunkedDiffusionModel(nn.Module):
         return logits, hidden_state
 
 
+    #
+    def forward(
+        self,
+        input_ids: Tensor,  # Dim: (B?, C, d_E)
+        permissions_mask: Tensor,  # Dim: (B?, C, k)
+        attention_causal_mask: Tensor,
+        use_cache: bool = False
+    ) -> tuple[Tensor, Tensor]:
+
+        #
+        ### Add batch dim if missing (makes inputs consistently 3D/4D). ###
+        #
+        if input_ids.ndim == 1:
+            #
+            input_ids = input_ids.unsqueeze(0)
+        #
+        if permissions_mask.ndim == 2:
+            #
+            permissions_mask = permissions_mask.unsqueeze(0)
+
+        #
+        hidden_state: Tensor = self.model_embedding_layer(input_ids)  # type: ignore
+        # Dim: (B?, C, d_E)
+
+        #
+        ### Create position_ids: standard 0 to seq-1, expanded for batch ###
+        ### Use shape[1] for seq_len (batch-safe) ###
+        #
+        seq_len: int= hidden_state.shape[1]
+        #
+        position_ids: Tensor = torch.arange(seq_len, dtype=torch.long, device=self.device).unsqueeze(0).expand(hidden_state.shape[0], seq_len)
+        #
+        position_embeddings: tuple[Tensor, Tensor] = self.model_rotary_embedding(x=hidden_state, position_ids=position_ids)
+
+        #
+        ### Calculate all the layers stack and return the logits and hidden state. ###
+        #
+        return self.forward_from_hidden_state(
+            hidden_state=hidden_state,
+            permissions_mask=permissions_mask,
+            attention_causal_mask=attention_causal_mask,
+            position_ids=position_ids,
+            position_embeddings=position_embeddings,
+            use_cache=use_cache
+        )
+
+
+    #
+    def diffuse(
+        self,
+        input_hidden_state: Tensor,
+        permissions_mask: Tensor,
+        output_hidden_state: Tensor,
+        output_logits: Tensor,
+        current_chunk_id: int,
+        remaining_diffusion_steps: int = 16,
+    ) -> tuple[Tensor, int, int]:  # (new_hidden_state, new_chunk_id, remaining_diffusion_steps)
+
+        #
+        ### TODO. ###
+        #
+        pass
+
+        #
+        return (input_hidden_state, current_chunk_id, remaining_diffusion_steps)
+
+
+    #
+    def token_prediction_at_cursor(
+        self,
+        cursor: int,
+        input_ids: Tensor,  # Dim: (B?, C, d_E)
+        permissions_mask: Tensor,  # Dim: (B?, C, k)
+        attention_causal_mask: Tensor,
+        use_cache: bool = False,
+    ) -> int:
+
+        #
+        ### TODO. ###
+        #
+        pass
+
+        #
+        return self.config.tokenizer_eos_token
+
+
 #
 ### Class for the Full ChunkedDiffusionSystem. ###
 #
@@ -215,6 +302,40 @@ class ChunkedDiffusionSystem:
         self.chunks: list[ Chunk ] = []
         #
         self.current_chunk: Optional[tuple[int, int]] = None
+
+        #
+        """
+        "hidden": 0,
+        "separation": 1,
+        "system_prompt_read_only": 2,
+        "file_name_read_only": 3,
+        "document_read_only": 4,
+        "chunk_inside_read_only": 5,
+        "chunk_global_read_only": 6,
+        "chunk_inside_read_and_write": 7,
+        "chunk_global_read_and_write": 8,
+        "global_space_read_and_write": 9,
+        "next_token_prediction_cursor": 10,
+        """
+        #
+        self.permissions_vectors: dict[str, Tensor] = {
+
+            permission_name: create_permission_vector(
+                nb_permissions_items=self.model.config.permissions_mask_nb_items,
+                permission_item = item_idx,
+                dtype=self.dtype,
+                device=self.device
+            )
+
+            for permission_name, item_idx in self.model.config.permissions_mask_indexes.items()
+        }
+        #
+        self.toks: dict[str, Tensor] = {
+            "pad": torch.tensor(data=[self.model.config.tokenizer_documents_separation_token], dtype=torch.int64, device=self.device),
+            "chunk_sep": torch.tensor(data=[self.model.config.tokenizer_documents_separation_token], dtype=torch.int64, device=self.device),
+            "doc_sep": torch.tensor(data=[self.model.config.tokenizer_documents_separation_token], dtype=torch.int64, device=self.device),
+            "doc_title_content_sep": torch.tensor(data=[self.model.config.tokenizer_documents_separation_token], dtype=torch.int64, device=self.device),
+        }
 
 
     #
@@ -382,18 +503,6 @@ class ChunkedDiffusionSystem:
 
 
     #
-    def init_all_chunks_global_context_with_chunk_encoding(self) -> Tensor:
-
-        #
-        ### TODO: for all chunks, intialize them by encoding them. ###
-        #
-        pass
-
-        #
-        return Tensor()
-
-
-    #
     def prepare_attention_causal_mask_from_permissions_mask(
         self,
         permissions_mask: Tensor
@@ -482,32 +591,23 @@ class ChunkedDiffusionSystem:
 
 
     #
-    def prepare_context_and_masks_for_all_chunks(
+    def context_and_permissions_from_doc_title(
         self,
-        chunk_documents: list[str],
-        chunk_documents_idx: list[int],
-        chunks: list[Chunk],
-        current_chunk: int
-    ) -> tuple[Tensor, Tensor, Tensor]:  # Returns (context tokens, permissions masks, causal mask)
+        doc_title: str,
+    ) -> tuple[Tensor, Tensor]:
 
         #
-        contexts_tensors: list[ Tensor ] = []
-        permissions_tensors: list[ Tensor ] = []
+        title_toks: list[int] = self.tokenizer.encode(text=doc_title)  # type: ignore
+        #
+        context: Tensor = torch.tensor(data=title_toks, dtype=torch.int64, device=self.device)
+        #
+        permissions: Tensor = torch.tile(
+            input=self.permissions_vectors["file_name_read_only"],
+            dims=(len(title_toks), 1)
+        )
 
         #
-        ### TODO ###
-        #
-        pass
-
-        #
-        context: Tensor = torch.cat( tensors=contexts_tensors, dim=-1 )
-        permissions_mask: Tensor = torch.cat( tensors=permissions_tensors, dim=-2 )
-
-        #
-        attention_causal_mask: Tensor = self.prepare_attention_causal_mask_from_permissions_mask( permissions_mask=permissions_mask )
-
-        #
-        return context, permissions_mask, attention_causal_mask
+        return (context, permissions)
 
 
     #
@@ -581,4 +681,228 @@ class ChunkedDiffusionSystem:
 
         #
         return final_embedding_tensor
+
+
+    #
+    def init_all_chunks_global_context_with_chunk_encoding(
+        self,
+        chunks: list[Chunk]
+    ) -> list[Chunk]:
+
+        #
+        for chunk in chunks:
+
+            #
+            chunk.chunk_global_context_data = self.encode_one_chunk(chunk=chunk)
+
+        #
+        return chunks
+
+
+    #
+    def prepare_context_and_masks_for_all_chunks(
+        self,
+        chunk_documents: list[str],
+        chunk_documents_idx: list[int],
+        chunks: list[Chunk],
+        current_chunk: int
+    ) -> tuple[Tensor, Tensor, Tensor]:  # Returns (context tokens, permissions masks, causal mask)
+
+        #
+        contexts_tensors: list[ Tensor ] = []
+        permissions_tensors: list[ Tensor ] = []
+
+        #
+        ### First document separation and title
+        #
+        ## Separation. ##
+        #
+        applst(
+            contexts_tensors, permissions_tensors,
+            self.toks["doc_sep"], self.permissions_vectors["separation"]
+        )
+        #
+        ## Title. ##
+        #
+        applst(
+            contexts_tensors, permissions_tensors,
+            *self.context_and_permissions_from_doc_title(doc_title=chunk_documents[0])
+        )
+        #
+        ## Content and title Separation. ##
+        #
+        applst(
+            contexts_tensors, permissions_tensors,
+            self.toks["doc_sep"], self.permissions_vectors["separation"]
+        )
+
+        #
+        crt_doc_idx: int = 0
+
+        #
+        for id_chunk in range(len(chunks)):
+
+            #
+            ### If document change. ###
+            #
+            if chunk_documents_idx[id_chunk] != crt_doc_idx:
+
+                #
+                crt_doc_idx = chunk_documents_idx[id_chunk]
+
+                #
+                ## Separation. ##
+                #
+                applst(
+                    contexts_tensors, permissions_tensors,
+                    self.toks["doc_sep"], self.permissions_vectors["separation"]
+                )
+                #
+                ## Title. ##
+                #
+                applst(
+                    contexts_tensors, permissions_tensors,
+                    *self.context_and_permissions_from_doc_title(doc_title=chunk_documents[crt_doc_idx])
+                )
+                #
+                ## Content and title Separation. ##
+                #
+                applst(
+                    contexts_tensors, permissions_tensors,
+                    self.toks["doc_sep"], self.permissions_vectors["separation"]
+                )
+
+            #
+            ### If current chunk. ###
+            #
+            if current_chunk == id_chunk:
+                #
+                ### Chunk Context with chunk separation at the end. ###
+                #
+                applst(
+                    contexts_tensors, permissions_tensors,
+                    chunks[id_chunk].chunk_context_data, chunks[id_chunk].permission_mask_context_data
+                )
+                #
+                applst(
+                    contexts_tensors, permissions_tensors,
+                    self.toks["chunk_sep"], self.permissions_vectors["separation"]
+                )
+
+            #
+            ### If NOT current chunk. ###
+            #
+            else:
+                #
+                ### Chunk Global Context with chunk separation at the end. ###
+                #
+                applst(
+                    contexts_tensors, permissions_tensors,
+                    chunks[id_chunk].chunk_global_context_data, chunks[id_chunk].permission_mask_global_context_data
+                )
+                #
+                applst(
+                    contexts_tensors, permissions_tensors,
+                    self.toks["chunk_sep"], self.permissions_vectors["separation"]
+                )
+
+        #
+        context: Tensor = torch.cat( tensors=contexts_tensors, dim=-1 )
+        permissions_mask: Tensor = torch.cat( tensors=permissions_tensors, dim=-2 )
+
+        #
+        attention_causal_mask: Tensor = self.prepare_attention_causal_mask_from_permissions_mask( permissions_mask=permissions_mask )
+
+        #
+        return context, permissions_mask, attention_causal_mask
+
+
+    #
+    def next_word_prediction(
+        chunk_documents: list[str],
+        chunk_documents_idx: list[int],
+        chunks: list[Chunk],
+        current_chunk_idx: int,
+        cursor_pos_in_chunk: int = -1,
+    ) -> tuple[ list[Chunk], int, int ]:  # (chunks, next_chunk_idx, next_cursor_pos_in_chunk)
+
+        #
+        ### TODO. ###
+        #
+        pass
+
+        #
+        return (chunks, current_chunk_idx, cursor_pos_in_chunk)
+
+
+    #
+    def fill_in_blanks(
+        self,
+        chunk_documents: list[str],
+        chunk_documents_idx: list[int],
+        chunks: list[Chunk],
+        where_to_fill: list[tuple[int, int]],  # liste de tuples: (chunk_idx, cursos_position_in_chunk_idx)
+    ) -> list[Chunk]:
+
+        #
+        ### TODO. ###
+        #
+        pass
+
+        #
+        return chunks
+
+
+    #
+    def decode_chunk_to_text(self, chunk: Chunk, decode_only_write: bool = True) -> str:
+
+        #
+        permission_item_chunk_inside_read_only: int = self.model.config.permissions_mask_indexes["chunk_inside_read_only"]
+        permission_item_chunk_inside_read_and_write: int = self.model.config.permissions_mask_indexes["chunk_inside_read_and_write"]
+
+        #
+        ### Filter only the chunks where the permission is "chunk_inside_read_and_write" if decode_only_write ELSE filter "chunk_inside_read_only" AND"chunk_inside_read_and_write" ###
+        #
+        what_to_decode: Tensor = (chunk.permission_mask_context_data[:, permission_item_chunk_inside_read_and_write] == 1)
+        #
+        if not decode_only_write:
+            #
+            what_to_decode |= (chunk.permission_mask_context_data[:, permission_item_chunk_inside_read_only] == 1)
+
+        #
+        return self.tokenizer.decode(token_ids=chunk.chunk_context_data[what_to_decode])  # type: ignore
+
+
+    #
+    def decode_all_main_chunks_into_text(
+        self,
+        chunk_documents: list[str],
+        chunk_documents_idx: list[int],
+        chunks: list[Chunk],
+        decode_only_write: bool = True
+    ) -> str:
+
+        #
+        chunk_txt_inversed: list[str] = []
+
+        #
+        ### Normally, the "main" document chunks are the last document's chunks. ###
+        #
+        correct_document_idx: int = (len(chunk_documents) - 1)
+        #
+        for i in range(len(chunks))[::-1]:
+            #
+            if chunk_documents_idx[i] != correct_document_idx:
+                #
+                break
+            #
+            chunk_txt_inversed.append(
+                self.decode_chunk_to_text(
+                    chunk=chunks[i],
+                    decode_only_write=decode_only_write
+                )
+            )
+
+        #
+        return "\n".join( chunk_txt_inversed[::-1] )
 

@@ -39,11 +39,12 @@ class ChunkedDiffusionModelConfig:
         tokenizer_chunk_separation_token: int = 1,
         tokenizer_documents_separation_token: int = 2,
         tokenizer_document_title_and_content_separation_token: int = 3,
+        tokenizer_eos_token: int = 4,
 
         #
         ### **Chunk** parameters. ###
         #
-        ## Non global chunk length, can be masked: `hidden`, `system_prompt_read_only`, `file_name_read_only`, `document_read_only`, `text_read_only`, `chunk_global_read_only`, `read_and_write_inside_chunk`, `chunk_global_read_and_write`, `global_space_read_and_write` ##
+        ## Non global chunk length, can be masked ##
         #
         chunk_length: int = 512,
         #
@@ -51,13 +52,6 @@ class ChunkedDiffusionModelConfig:
         #
         chunk_global_context_length: int = 8,
 
-        #
-        ### **Mask** parameters. ###
-        #
-        ## Nb items of the mask. ##
-        ## `hidden`, `system_prompt_read_only`, `file_name_read_only`, `document_read_only`, `text_read_only`, `chunk_global_read_only`, `read_and_write_inside_chunk`, `chunk_global_read_and_write`, `global_space_read_and_write` ##
-        #
-        permissions_mask_nb_items: int = 9
 
     ) -> None:
 
@@ -90,10 +84,13 @@ class ChunkedDiffusionModelConfig:
         #
         self.tokenizer_padding_side: str = tokenizer_padding_side
         #
+        ### TODO: get correct token ids from model config. ###
+        #
         self.tokenizer_pad_token: int = tokenizer_pad_token
         self.tokenizer_chunk_separation_token: int = tokenizer_chunk_separation_token
         self.tokenizer_documents_separation_token: int = tokenizer_documents_separation_token
         self.tokenizer_document_title_and_content_separation_token: int = tokenizer_document_title_and_content_separation_token
+        self.tokenizer_eos_token: int = tokenizer_eos_token
 
         #
         ### **Chunk** parameters. ###
@@ -109,20 +106,23 @@ class ChunkedDiffusionModelConfig:
         #
         ### **Permissions Mask** parameters. ###
         #
-        ## Nb items of the permissions mask. ##
-        ## Permissions values: `hidden`, `system_prompt_read_only`, `file_name_read_only`, `document_read_only`, `text_read_only`, `chunk_global_read_only`, `read_and_write_inside_chunk`, `chunk_global_read_and_write`, `global_space_read_and_write` ##
-        #
-        self.permissions_mask_nb_items: int = permissions_mask_nb_items
-        #
         self.permissions_mask_indexes: dict[str, int] = {
             "hidden": 0,
-            "system_prompt_read_only": 1,
-            "file_name_read_only": 2,
-            "document_read_only": 3,
-            "text_read_only": 4,
-            "chunk_global_read_only": 5,
-            "chunk_inside_read_and_write": 6,
-            "chunk_global_read_and_write": 7,
-            "global_space_read_and_write": 8
+            "separation": 1,
+            "system_prompt_read_only": 2,
+            "file_name_read_only": 3,
+            "document_read_only": 4,
+            "chunk_inside_read_only": 5,
+            "chunk_global_read_only": 6,
+            "chunk_inside_read_and_write": 7,
+            "chunk_global_read_and_write": 8,
+            "global_space_read_and_write": 9,
+            "next_token_prediction_cursor": 10,
         }
+        #
+        ## Nb items of the permissions mask. ##
+        #
+        self.permissions_mask_nb_items: int = len(
+            self.permissions_mask_indexes
+        )
 
