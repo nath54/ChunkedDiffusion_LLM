@@ -266,9 +266,6 @@ class Trainer:
         final_loss: Tensor = mean_distance + min_distance
 
         #
-        tqdm.write(f"Test loss = {final_loss}")
-
-        #
         return final_loss
 
 
@@ -335,7 +332,14 @@ class Trainer:
         self.cdllm.model.train()
 
         #
-        return sum(losses) / len(losses) if losses else float("nan")
+        final_loss_value: float = sum(losses) / len(losses) if losses else float("nan")
+
+        #
+        tqdm.write(f"Test loss = {final_loss_value}")
+
+        #
+        return final_loss_value
+
 
 
     #
