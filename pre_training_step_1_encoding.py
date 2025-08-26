@@ -122,6 +122,8 @@ class Trainer:
         self.test_lst: list[str] = []
         #
         self.train_lst, self.test_lst = prepare_dataset()
+        #
+        self.test_lst = self.test_lst[:100]
 
         #
         ### Prepare encoder parent model. ###
@@ -264,6 +266,9 @@ class Trainer:
         final_loss: Tensor = mean_distance + min_distance
 
         #
+        tqdm.write(f"Test loss = {final_loss}")
+
+        #
         return final_loss
 
 
@@ -309,7 +314,9 @@ class Trainer:
         #
         with torch.no_grad():  # Disable gradient computation for testing
             #
-            for _i, text in tqdm(enumerate(self.test_lst), desc="Testing..."):
+            len_test: int = len(self.test_lst)
+            #
+            for _i, text in tqdm(enumerate(self.test_lst), desc=f"Testing on {len_test} test exemples..."):
 
                 #
                 ### Calculate embeddings and get loss. ###
