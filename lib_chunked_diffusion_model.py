@@ -260,7 +260,7 @@ class ChunkedDiffusionModel(nn.Module):
         permissions_mask: Tensor,  # Dim: (B?, C, k)
         attention_causal_mask: Tensor,
         use_cache: bool = False,
-    ) -> int:
+    ) -> Tensor:  # Returns the logits for the token prediction at the cursor.
 
         #
         ### TODO. ###
@@ -268,7 +268,9 @@ class ChunkedDiffusionModel(nn.Module):
         pass
 
         #
-        return self.config.tokenizer_eos_token
+        return torch.tensor(
+            [1.0 if i == self.config.tokenizer_eos_token else 0 for i in range(self.config.from_model_config_voc_length)]
+        )
 
 
 #
