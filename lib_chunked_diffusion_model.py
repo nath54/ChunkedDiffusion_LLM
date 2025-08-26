@@ -394,6 +394,51 @@ class ChunkedDiffusionSystem:
 
 
     #
+    def prepare_attention_causal_mask_from_permissions_mask(
+        self,
+        permissions_mask: Tensor
+    ) -> Tensor:
+
+        #
+        ### Compute sequence length (works for batched or unbatched). ###
+        #
+        seq_len: int = permissions_mask.shape[-2]
+
+        #
+        ### Create lower triangular matrix (True where can attend causally) ###
+        #
+        tri: Tensor = torch.tril(torch.ones((seq_len, seq_len), dtype=torch.bool, device=self.device))
+
+        #
+        ### Identify non-hidden positions (first permission > 0.5 means hidden). ###
+        #
+        not_hidden: Tensor = permissions_mask[..., self.model.config.permissions_mask_indexes["hidden"]] <= 0.5  # Shape: (B?, seq_len)
+
+        #
+        ### Broadcast not_hidden to mask entire src columns for hidden tokens ###
+        ### & combines causal with hidden mask (elementwise AND) ###
+        #
+        attention_causal_mask: Tensor
+        #
+        ### Batched case. ###
+        #
+        if permissions_mask.ndim == 3:
+            #
+            attention_causal_mask = tri[None, :, :] & not_hidden[:, None, :]
+            attention_causal_mask = attention_causal_mask.unsqueeze(1)  # Add head dim: (B, 1, seq, seq)
+        #
+        ### Unbatched case. ###
+        #
+        else:
+            #
+            attention_causal_mask = tri & not_hidden[None, :]
+            attention_causal_mask = attention_causal_mask.unsqueeze(0).unsqueeze(0)  # (1, 1, seq, seq)
+
+        #
+        return attention_causal_mask
+
+
+    #
     def prepare_context_and_masks_for_one_chunk(
         self,
         chunk: Chunk,
@@ -430,40 +475,39 @@ class ChunkedDiffusionSystem:
             permissions_mask = chunk.permission_mask_context_data
 
         #
-        ### Compute sequence length (works for batched or unbatched). ###
-        #
-        seq_len: int = permissions_mask.shape[-2]
+        attention_causal_mask: Tensor = self.prepare_attention_causal_mask_from_permissions_mask(permissions_mask=permissions_mask)
 
         #
-        ### Create lower triangular matrix (True where can attend causally) ###
-        #
-        tri: Tensor = torch.tril(torch.ones((seq_len, seq_len), dtype=torch.bool, device=self.device))
+        return context_tokens, permissions_mask, attention_causal_mask
+
+
+    #
+    def prepare_context_and_masks_for_all_chunks(
+        self,
+        chunk_documents: list[str],
+        chunk_documents_idx: list[int],
+        chunks: list[Chunk],
+        current_chunk: int
+    ) -> tuple[Tensor, Tensor, Tensor]:  # Returns (context tokens, permissions masks, causal mask)
 
         #
-        ### Identify non-hidden positions (first permission > 0.5 means hidden). ###
-        #
-        not_hidden: Tensor = permissions_mask[..., self.model.config.permissions_mask_indexes["hidden"]] <= 0.5  # Shape: (B?, seq_len)
+        contexts_tensors: list[ Tensor ] = []
+        permissions_tensors: list[ Tensor ] = []
 
         #
-        ### Broadcast not_hidden to mask entire src columns for hidden tokens ###
-        ### & combines causal with hidden mask (elementwise AND) ###
+        ### TODO ###
         #
-        ### Batched case. ###
-        #
-        if permissions_mask.ndim == 3:
-            #
-            causal_mask: Tensor = tri[None, :, :] & not_hidden[:, None, :]
-            causal_mask = causal_mask.unsqueeze(1)  # Add head dim: (B, 1, seq, seq)
-        #
-        ### Unbatched case. ###
-        #
-        else:
-            #
-            causal_mask: Tensor = tri & not_hidden[None, :]
-            causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)  # (1, 1, seq, seq)
+        pass
 
         #
-        return context_tokens, permissions_mask, causal_mask
+        context: Tensor = torch.cat( tensors=contexts_tensors, dim=0 )
+        permissions_mask: Tensor = torch.cat( tensors=permissions_tensors, dim=0 )
+
+        #
+        attention_causal_mask: Tensor = self.prepare_attention_causal_mask_from_permissions_mask( permissions_mask=permissions_mask )
+
+        #
+        return context, permissions_mask, attention_causal_mask
 
 
     #
