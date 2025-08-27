@@ -884,6 +884,11 @@ class ChunkedDiffusionSystem:
             raise UserWarning(f"Bad permissions_mask ndim = {permissions_mask.ndim}")
 
         #
+        ### TODO: verify and ensure the global_idx to a batched boolean vector along the sequence with a True if there is at least one True un the last dimension ###
+        #
+        pass
+
+        #
         batched_chunk_modified_hidden_states: Optional[list[dict[int, Tensor]]] = None
         #
         if chunk_modified_hidden_states is not None:
@@ -944,7 +949,7 @@ class ChunkedDiffusionSystem:
         globals_idx: Tensor = (batched_permissions[:, :, self.model.config.permissions_mask_indexes["chunk_global_read_and_write"]] > 0.5)
 
         #
-        ### TODO: crunch the global_idx to a batched boolean vector along the sequence with a True if there is at least one True un the last dimension ###
+        ### TODO: verify and ensure the global_idx to a batched boolean vector along the sequence with a True if there is at least one True un the last dimension ###
         #
         pass
 
@@ -1000,12 +1005,15 @@ class ChunkedDiffusionSystem:
     def batched_encode_text(self, texts: list[str], encoding_length: Optional[int] = None) -> Tensor:
 
         #
-        contexts: list[Tensor] = []
-        permissions: list[Tensor] = []
-
-        #
         chunks_batches: list[list[Chunk]] = []
 
+        #
+        nb_chunks_per_batch_idx: list[int] = []
+
+        #
+        ### Preparing the chunks batches. ###
+        ### Note: Each batch idx don't have necessarly the same number of chunks. ###
+        ### Note: Currently, to get the embedding of one text, it averages the embeddings of each chunks. ###
         #
         for text in texts:
 
@@ -1015,36 +1023,39 @@ class ChunkedDiffusionSystem:
             chunks, _chunks_lengths = self.split_text_of_one_document_in_chunks(text=text, override_chunk_global_lenght=encoding_length)
 
             #
-            # TODO
-
-        #
-        chunks_encoding: list[Tensor] = []
-
-        #
-        for chunk in chunks:
+            for i in range(len(chunks)):
+                #
+                if len(chunks_batches) <= i:
+                    #
+                    chunks_batches.append( [chunks[i]] )
+                #
+                else:
+                    #
+                    chunks_batches[i].append( chunks[i] )
 
             #
-            chunks_encoding.append(
-                self.encode_one_chunk( chunk=chunk )
-            )
+            nb_chunks_per_batch_idx.append( len(chunks) )
 
         #
-        if not chunks_encoding:
+        chunks_embeddings: list[Tensor] = []
+
+        #
+        chunk_batch: list[Chunk]
+        #
+        for i, chunk_batch in enumerate(chunks_batches):
+
             #
-            raise UserWarning(f"Error: no chunks={chunks} | chunks_encoding={chunks_encoding} for input text=`{text}`")
-
-        #
-        final_embedding_tensor: Tensor = chunks_encoding[0]
-        #
-        for chunk in chunks_encoding[1:]:
+            batched_embedding: Tensor = self.batched_encode_chunks(chunks=chunk_batch)
             #
-            final_embedding_tensor += chunk
+            chunks_embeddings.append( batched_embedding )
 
         #
-        final_embedding_tensor /= float( len(chunks_encoding) )
+        ### TODO: average the embeddings of each batchs correctly, be aware of not mixing batchs and multiple chunks of a SAME TEXT, e.g. batchs and chunks dimensions. ###
+        #
+        pass
 
         #
-        return final_embedding_tensor
+        return Tensor()
 
 
     #
