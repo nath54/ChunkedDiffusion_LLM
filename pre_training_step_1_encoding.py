@@ -73,11 +73,11 @@ class Trainer:
         #
         ## Learning rate and optimizer. ##
         #
-        self.learning_rate: float = 5e-4
+        self.learning_rate: float = 1e-5
         #
         self.optimizer: Optimizer = AdamW(params=self.cdllm.parameters(), lr=self.learning_rate)
         #
-        self.test_each_iterations: int = 100
+        self.test_each_iterations: int = 200
 
         #
         ### Random projection Embedding matrixes. ###
