@@ -93,7 +93,7 @@ class Trainer:
 
 
     #
-    def forward_cdllm_embedding(self, text: str, embedding_context_length: int = 4) -> Tensor:
+    def forward_cdllm_embedding(self, text: str, embedding_context_length: int = 1) -> Tensor:
 
         #
         ### Calculate the embedding with the CDLLM model. ###
@@ -159,7 +159,7 @@ class Trainer:
         ### Calculate the minimum distance among all the rows. ###
         ### This finds the closest CDLLM embedding to the truth embedding. ###
         #
-        min_distance: Tensor = torch.min(all_distances)
+        # min_distance: Tensor = torch.min(all_distances)
 
         #
         ### Calculate the mean distance of all the rows. ###
@@ -171,10 +171,10 @@ class Trainer:
         ### The final loss is a combination of the mean and minimum distances. ###
         ### This encourages both the average of all embeddings and the closest one to be accurate. ###
         #
-        final_loss: Tensor = mean_distance + min_distance
+        # final_loss: Tensor = mean_distance + min_distance
 
         #
-        return final_loss
+        return mean_distance
 
 
     #

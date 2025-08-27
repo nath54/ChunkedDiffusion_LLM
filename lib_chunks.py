@@ -100,6 +100,7 @@ class Chunk:
     def __init__(
         self,
         permissions_items: dict[str, int],
+        hidden_size: int,
         chunk_length: int = 512,
         chunk_global_context_length: int = 5,
         initial_data: Optional[Tensor] = None,
@@ -115,6 +116,8 @@ class Chunk:
         #
         self.padding_token: int = padding_token
         #
+        self.hidden_size: int = hidden_size
+        #
         self.permissions_items: dict[str, int] = permissions_items
         self.nb_permissions_items: int = len(permissions_items)
 
@@ -128,7 +131,7 @@ class Chunk:
         self.chunk_context_shape: tuple[int, ...] = (self.chunk_length,)
         self.permissions_mask_context_shape: tuple[int, ...] = (self.chunk_length, self.nb_permissions_items)
         #
-        self.chunk_global_context_shape: tuple[int, ...] = (self.chunk_global_context_length,)
+        self.chunk_global_context_shape: tuple[int, ...] = (self.chunk_global_context_length, self.hidden_size)
         self.permissions_mask_global_context_shape: tuple[int, ...] = (self.chunk_global_context_length, self.nb_permissions_items)
 
         #
@@ -161,8 +164,8 @@ class Chunk:
         #
         self.chunk_global_context_data: Tensor = torch.full(
             size=self.chunk_global_context_shape,
-            fill_value=self.padding_token,
-            dtype=torch.int64,
+            fill_value=0,
+            dtype=self.dtype,
             device=self.device
         )
         #
@@ -199,3 +202,4 @@ class Chunk:
         if initial_data_permissions_mask is not None:
             #
             self.permission_mask_context_data = set_matrix_initial_data(destination=self.permission_mask_context_data, source=initial_data_permissions_mask)
+

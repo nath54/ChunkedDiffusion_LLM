@@ -328,7 +328,7 @@ class ChunkedDiffusionModel(nn.Module):
         permissions_mask: Tensor,  # Dim: (B?, C, k)
         attention_causal_mask: Tensor,
         use_cache: bool = False,
-        modified_hidden_states: Optional[dict[int, Tensor]] = None,
+        modified_hidden_states: Optional[list[dict[int, Tensor]]] = None,
     ) -> tuple[Tensor, Tensor]:
 
         #
@@ -350,17 +350,20 @@ class ChunkedDiffusionModel(nn.Module):
         if modified_hidden_states is not None:
 
             #
-            for tok_id, modified_hidden_state in modified_hidden_states.items():
+            for batch_idx, crt_batch_modified_hidden_states in enumerate( modified_hidden_states ):
 
                 #
-                if hidden_state.ndim == 2:
-                    #
-                    hidden_state[tok_id, :] = modified_hidden_state
+                for tok_id, modified_hidden_state in crt_batch_modified_hidden_states.items():
 
-                #
-                elif hidden_state.ndim == 3:
                     #
-                    hidden_state[0, tok_id, :] = modified_hidden_state
+                    if hidden_state.ndim == 2 and batch_idx == 0:
+                        #
+                        hidden_state[tok_id, :] = modified_hidden_state
+
+                    #
+                    elif hidden_state.ndim == 3:
+                        #
+                        hidden_state[batch_idx, tok_id, :] = modified_hidden_state
 
         #
         ### Create position_ids: standard 0 to seq-1, expanded for batch ###
@@ -465,6 +468,7 @@ class ChunkedDiffusionSystem:
         #
         return Chunk(
             permissions_items=self.model.config.permissions_mask_indexes,
+            hidden_size=self.model.config.from_model_config_hidden_size,
             chunk_length = self.model.config.chunk_length,
             chunk_global_context_length = override_chunk_global_lenght if override_chunk_global_lenght is not None else self.model.config.chunk_global_context_length,
             initial_data=torch.tensor(chunk_tok_ids, dtype=torch.int64, device=self.device) if chunk_tok_ids else None,
@@ -766,6 +770,99 @@ class ChunkedDiffusionSystem:
 
 
     #
+    def batch_contexts_permissions_and_attention_mask(self, contexts: list[Tensor], permissions: list[Tensor], attentions_masks: list[Tensor]) -> tuple[Tensor, Tensor, Tensor]:
+
+        #
+        ### Get the largest sequence length. ###
+        #
+        largest_sequence_length: int = contexts[0].shape[-1]
+        #
+        for c in contexts[1:]:
+            #
+            if c.shape[-1] > largest_sequence_length:
+                #
+                largest_sequence_length = c.shape[-1]
+
+        #
+        ### Ensure every contexts matrixes have a batch dimension and fill with padding. ###
+        #
+        for i, c in enumerate( contexts ):
+
+            #
+            if c.ndim == 1:
+
+                #
+                contexts[i] = c.unsqueeze(0)
+
+            #
+            if c.shape[1] < largest_sequence_length:
+
+                #
+                full_c: Tensor = torch.full(
+                    size=(c.shape[0], largest_sequence_length),
+                    fill_value=self.model.config.tokenizer_pad_token,
+                    dtype=torch.int64,
+                    device=self.device
+                )
+                #
+                full_c[c.shape[0]:, c.shape[1:]] = c
+                #
+                contexts[i] = full_c
+
+        #
+        ### Ensure every permissions matrixes have a batch dimension and fill with padding. ###
+        #
+        for i, p in enumerate( permissions ):
+
+            #
+            if p.ndim == 2:
+
+                #
+                permissions[i] = p.unsqueeze(0)
+
+            #
+            if p.shape[1] < largest_sequence_length:
+
+                #
+                full_p: Tensor = torch.full(
+                    size=(p.shape[0], largest_sequence_length, p.shape[2]),
+                    fill_value=0,
+                    dtype=self.dtype,
+                    device=self.device
+                )
+                #
+                full_p[p.shape[0]:, p.shape[1]:, p.shape[2]:] = p
+                full_p[:, :p.shape[1], :] = self.permissions_vectors["hidden"]
+                #
+                permissions[i] = full_p
+
+        #
+        ### Fill with padding all the attention masks. ###
+        #
+        for i, a in enumerate( attentions_masks ):
+
+            #
+            if a.shape[-1] < largest_sequence_length:
+
+                #
+                full_a: Tensor = torch.full(
+                    size=(a.shape[0], a.shape[1], largest_sequence_length, largest_sequence_length),
+                    fill_value=a[0, 0, 0, -1].item(),
+                    dtype=a.dtype,
+                    device=self.device
+                )
+                #
+                full_a[a.shape[0]:, a.shape[1]:, a.shape[2]:, a.shape[3]:] = a
+                #
+                attentions_masks[i] = full_a
+
+        #
+        ### Concatenate along the batch dimension
+        #
+        return torch.cat( tensors=contexts, dim=0 ), torch.cat( tensors=permissions, dim=0 ), torch.cat( tensors=attentions_masks, dim=0 )
+
+
+    #
     def encode_one_chunk(self, chunk: Chunk, chunk_modified_hidden_states: Optional[dict[int, Tensor]] = None) -> Tensor:
 
         #
@@ -787,12 +884,69 @@ class ChunkedDiffusionSystem:
             raise UserWarning(f"Bad permissions_mask ndim = {permissions_mask.ndim}")
 
         #
+        batched_chunk_modified_hidden_states: Optional[list[dict[int, Tensor]]] = None
+        #
+        if chunk_modified_hidden_states is not None:
+            #
+            batched_chunk_modified_hidden_states = [chunk_modified_hidden_states]
+
+        #
         _logits, hidden_states = self.model.forward(
             input_ids=context_tokens,
             permissions_mask=permissions_mask,
             attention_causal_mask=causal_mask,
-            modified_hidden_states=chunk_modified_hidden_states
+            modified_hidden_states=batched_chunk_modified_hidden_states
         )
+
+        #
+        if globals_idx.ndim == 1:
+            #
+            globals_idx = globals_idx.unsqueeze(0)
+
+        #
+        return hidden_states[globals_idx]
+
+
+    #
+    def batched_encode_chunks(self, chunks: list[Chunk], chunks_modified_hidden_states: Optional[list[dict[int, Tensor]]] = None) -> Tensor:
+
+        #
+        contexts_tokens: list[ Tensor ] = []
+        permissions_masks: list[ Tensor ] = []
+        attentions_masks: list[ Tensor ] = []
+
+        #
+        for chunk in chunks:
+
+            #
+            context_tokens, permissions_mask, causal_mask = self.prepare_context_and_masks_for_one_chunk(chunk=chunk, with_globals=True)
+            #
+            contexts_tokens.append(context_tokens)
+            permissions_masks.append(permissions_mask)
+            attentions_masks.append(causal_mask)
+
+        #
+        batched_context, batched_permissions, batched_causal_mask = self.batch_contexts_permissions_and_attention_mask(
+            contexts=contexts_tokens,
+            permissions=permissions_masks,
+            attentions_masks=attentions_masks
+        )
+
+        #
+        _logits, hidden_states = self.model.forward(
+            input_ids=batched_context,
+            permissions_mask=batched_permissions,
+            attention_causal_mask=batched_causal_mask,
+            modified_hidden_states=chunks_modified_hidden_states
+        )
+
+        #
+        globals_idx: Tensor = (batched_permissions[:, :, self.model.config.permissions_mask_indexes["chunk_global_read_and_write"]] > 0.5)
+
+        #
+        ### TODO: crunch the global_idx to a batched boolean vector along the sequence with a True if there is at least one True un the last dimension ###
+        #
+        pass
 
         #
         if globals_idx.ndim == 1:
@@ -811,6 +965,57 @@ class ChunkedDiffusionSystem:
         _chunks_lengths: list[int]
         #
         chunks, _chunks_lengths = self.split_text_of_one_document_in_chunks(text=text, override_chunk_global_lenght=encoding_length)
+
+        #
+        chunks_encoding: list[Tensor] = []
+
+        #
+        for chunk in chunks:
+
+            #
+            chunks_encoding.append(
+                self.encode_one_chunk( chunk=chunk )
+            )
+
+        #
+        if not chunks_encoding:
+            #
+            raise UserWarning(f"Error: no chunks={chunks} | chunks_encoding={chunks_encoding} for input text=`{text}`")
+
+        #
+        final_embedding_tensor: Tensor = chunks_encoding[0]
+        #
+        for chunk in chunks_encoding[1:]:
+            #
+            final_embedding_tensor += chunk
+
+        #
+        final_embedding_tensor /= float( len(chunks_encoding) )
+
+        #
+        return final_embedding_tensor
+
+
+    #
+    def batched_encode_text(self, texts: list[str], encoding_length: Optional[int] = None) -> Tensor:
+
+        #
+        contexts: list[Tensor] = []
+        permissions: list[Tensor] = []
+
+        #
+        chunks_batches: list[list[Chunk]] = []
+
+        #
+        for text in texts:
+
+            #
+            chunks: list[Chunk]
+            #
+            chunks, _chunks_lengths = self.split_text_of_one_document_in_chunks(text=text, override_chunk_global_lenght=encoding_length)
+
+            #
+            # TODO
 
         #
         chunks_encoding: list[Tensor] = []
