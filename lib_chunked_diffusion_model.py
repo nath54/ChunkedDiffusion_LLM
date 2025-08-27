@@ -669,7 +669,10 @@ class ChunkedDiffusionSystem:
     def simple_encode_text(self, text: str, encoding_length: Optional[int] = None) -> Tensor:
 
         #
-        chunks: list[Chunk] = self.split_text_of_one_document_in_chunks(text=text, override_chunk_global_lenght=encoding_length)
+        chunks: list[Chunk]
+        _chunks_lengths: list[int]
+        #
+        chunks, _chunks_lengths = self.split_text_of_one_document_in_chunks(text=text, override_chunk_global_lenght=encoding_length)
 
         #
         chunks_encoding: list[Tensor] = []
