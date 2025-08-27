@@ -1,11 +1,28 @@
 #
 ### Import Modules. ###
 #
+from typing import Optional, Any
+#
 from transformers import (
     PretrainedConfig
 )
 #
 from lib_load_from_hugging_face import load_config
+
+
+#
+##
+#
+def mix_custom_config_to_pretrained_config(pretrained_config: PretrainedConfig, custom_config: dict[str, Any]) -> PretrainedConfig:
+
+    #
+    for key, value in custom_config.items():
+
+        #
+        setattr(pretrained_config, key, value)
+
+    #
+    return pretrained_config
 
 
 #
@@ -27,6 +44,10 @@ class ChunkedDiffusionModelConfig:
         ## Indicates model family (eg: Qwen2, Qwen3, Llama-3.2, ...). ##
         #
         from_model_family: str = "Qwen2",
+        #
+        ### From model Custom Config. ###
+        #
+        from_model_custom_config: Optional[dict[str, Any]] = None,
 
         #
         ### Tokenizer parameters. ###
@@ -73,6 +94,14 @@ class ChunkedDiffusionModelConfig:
         ## Pretrained config from the model. ##
         #
         self.from_model_config: PretrainedConfig = load_config(model_name=self.from_model_name)
+        #
+        ## Custom config. ###
+        #
+        self.from_model_custom_config: Optional[dict[str, Any]] = from_model_custom_config
+        #
+        if self.from_model_custom_config is not None:
+            #
+            self.from_model_config = mix_custom_config_to_pretrained_config(self.from_model_config, self.from_model_custom_config)
         #
         ## From model useful parameters values. ##
         #

@@ -9,7 +9,7 @@ from torch import nn
 #
 from transformers import PreTrainedModel, PreTrainedTokenizer
 #
-from transformers.models.qwen2.modeling_qwen2 import Qwen2RotaryEmbedding
+from transformers.models.qwen2.modeling_qwen2 import Qwen2RotaryEmbedding, Qwen2DecoderLayer
 #
 from lib_load_from_hugging_face import load_model, load_tokenizer
 from lib_chunked_diffusion_model_config import ChunkedDiffusionModelConfig
@@ -29,6 +29,71 @@ def addlst(lst1: list[Tensor], lst2: list[Tensor], itms1: list[Tensor], itms2: l
     #
     lst1 += itms1
     lst2 += itms2
+
+
+#
+### Custom Shared LMHead
+#
+
+class SharedEmbeddingAndLMHead(nn.Module):
+    """
+    A module that shares a single weight matrix for an nn.Embedding layer
+    and a linear layer (LM head).
+    """
+    def __init__(self, num_embeddings: int, embedding_dim: int, dtype: Optional[torch.dtype] = None, device: Optional[str | torch.device] = None) -> None:
+
+        #
+        super().__init__()  # type: ignore
+
+        #
+        ### Use a single nn.Parameter for the weight matrix. ###
+        #
+        self.weight = nn.Parameter(torch.Tensor(num_embeddings, embedding_dim))
+        #
+        nn.init.normal_(self.weight)  # Initialize the weight matrix.
+
+        #
+        self.device: Optional[str | torch.device] = device
+        self.dtype: Optional[torch.dtype] = dtype
+
+    #
+    def forward(self, input_ids: Tensor) -> Tensor:
+        #
+        ### The forward method will be implemented in the main model. ###
+        #
+        raise NotImplementedError
+
+    #
+    def get_embedding_layer(self):
+        #
+        ### Create an nn.Embedding layer that uses the shared weight matrix. ###
+        #
+        embedding_layer = nn.Embedding(
+            num_embeddings=self.weight.size(0),
+            embedding_dim=self.weight.size(1),
+            _weight=self.weight,
+            device=self.device,
+            dtype=self.dtype
+        )
+        #
+        return embedding_layer
+
+    #
+    def get_lm_head(self):
+        #
+        ### Create a linear layer (LM head) that uses the transposed shared weight matrix. ###
+        #
+        lm_head = nn.Linear(
+            in_features=self.weight.size(1),
+            out_features=self.weight.size(0),
+            bias=False,
+            device=self.device,
+            dtype=self.dtype
+        )
+        #
+        lm_head.weight = self.weight  # This is the key line for sharing the weights!
+        #
+        return lm_head
 
 
 #
@@ -53,7 +118,11 @@ class ChunkedDiffusionModel(nn.Module):
         #
         self.config: ChunkedDiffusionModelConfig = config
         #
-        self.model: PreTrainedModel = load_model(model_name=self.config.from_model_name)
+        self.model: Optional[PreTrainedModel] = None
+        #
+        if self.config.from_model_custom_config is None:
+            #
+            self.model = load_model(model_name=self.config.from_model_name).to(device=self.device, dtype=self.dtype)  # type: ignore
         #
         self.model_embedding_layer: Optional[nn.Module] = None  # Will be initialized with prepare_model()
         self.model_transformer_layers: Optional[nn.ModuleList] = None  # Will be initialized with prepare_model()
@@ -74,7 +143,21 @@ class ChunkedDiffusionModel(nn.Module):
     def parameters(self, recurse: bool = True) -> Iterator[nn.Parameter]:
 
         #
-        return iter( list(self.projector_intern.parameters(recurse=recurse)) + list(self.model.parameters(recurse=recurse)) + list(self.model_rotary_embedding.parameters()) )
+        params_lst: list[nn.Parameter] = list(self.projector_intern.parameters(recurse=recurse)) + list(self.model_rotary_embedding.parameters())
+
+        #
+        if self.model is not None:
+            #
+            params_lst += list(self.model.parameters(recurse=recurse))
+        #
+        elif self.model_embedding_layer is not None and self.model_lm_head is not None and self.model_transformer_layers is not None:
+            #
+            params_lst += list(self.model_embedding_layer.parameters(recurse=recurse))
+            params_lst += list(self.model_lm_head.parameters(recurse=recurse))
+            params_lst += list(self.model_transformer_layers.parameters(recurse=recurse))
+
+        #
+        return iter( params_lst )
 
 
     #
@@ -87,38 +170,91 @@ class ChunkedDiffusionModel(nn.Module):
         """
 
         #
-        ### Prepare `self.model_embedding_layer`, `self.model_transformer_layers`, `self.model_lm_head`. ###
+        ### If not a custom model config. ###
         #
-        model_family: str = self.config.from_model_family.lower()
+        if self.config.from_model_custom_config is None:
 
-        #
-        ### Handle models with a common architecture (e.g., Llama, Qwen, Mistral) ###
-        ### These models typically have a `model` attribute containing `embed_tokens` and `layers`. ###
-        #
-        if "qwen" in model_family or "llama" in model_family or "mistral" in model_family:
             #
-            self.model_embedding_layer = self.model.model.embed_tokens  # type: ignore
-            self.model_transformer_layers = self.model.model.layers  # type: ignore
-            self.model_lm_head = self.model.lm_head  # type: ignore
-
-        #
-        ### GPT-2 model family. ###
-        #
-        elif "gpt2" in model_family:
+            ### Prepare `self.model_embedding_layer`, `self.model_transformer_layers`, `self.model_lm_head`. ###
             #
-            self.model_embedding_layer = self.model.transformer.wte  # type: ignore
-            self.model_transformer_layers = self.model.transformer.h  # type: ignore
-            self.model_lm_head = self.model.lm_head  # type: ignore
+            model_family: str = self.config.from_model_family.lower()
+
+            #
+            ### Handle models with a common architecture (e.g., Llama, Qwen, Mistral) ###
+            ### These models typically have a `model` attribute containing `embed_tokens` and `layers`. ###
+            #
+            if "qwen" in model_family or "llama" in model_family or "mistral" in model_family:
+                #
+                self.model_embedding_layer = self.model.model.embed_tokens  # type: ignore
+                self.model_transformer_layers = self.model.model.layers  # type: ignore
+                self.model_lm_head = self.model.lm_head  # type: ignore
+
+            #
+            ### GPT-2 model family. ###
+            #
+            elif "gpt2" in model_family:
+                #
+                self.model_embedding_layer = self.model.transformer.wte  # type: ignore
+                self.model_transformer_layers = self.model.transformer.h  # type: ignore
+                self.model_lm_head = self.model.lm_head  # type: ignore
+
+            #
+            ### Raise an error if the model family is not supported yet. ###
+            #
+            else:
+                #
+                raise NotImplementedError(
+                    f"Model family '{self.config.from_model_family}' is not yet supported. "
+                    f"Please add its specific layer architecture to the `prepare_model` method."
+                )
 
         #
-        ### Raise an error if the model family is not supported yet. ###
+        ### If it is a custom model config. ###
         #
         else:
+
             #
-            raise NotImplementedError(
-                f"Model family '{self.config.from_model_family}' is not yet supported. "
-                f"Please add its specific layer architecture to the `prepare_model` method."
+            if hasattr(self.config.from_model_config, "shared_head_and_embeddings") and getattr(self.config.from_model_config, "shared_head_and_embeddings"):
+                #
+                shared_embedding_and_head_module: SharedEmbeddingAndLMHead = SharedEmbeddingAndLMHead(
+                    num_embeddings=self.config.from_model_config.vocab_size,
+                    embedding_dim=self.config.from_model_config.hidden_size,
+                    device=self.device,
+                    dtype=self.dtype,
+                )
+                #
+                self.model_embedding_layer = shared_embedding_and_head_module.get_embedding_layer()
+                self.model_lm_head = shared_embedding_and_head_module.get_lm_head()
+            #
+            else:
+                #
+                self.model_embedding_layer = nn.Embedding(
+                    num_embeddings=self.config.from_model_config.vocab_size,
+                    embedding_dim=self.config.from_model_config.hidden_size,
+                    device=self.device,
+                    dtype=self.dtype,
+                )
+                #
+                self.model_lm_head = nn.Linear(
+                    in_features=self.config.from_model_config.hidden_size,
+                    out_features=self.config.from_model_config.vocab_size,
+                    dtype=self.dtype,
+                    device=self.device
+                )
+
+            #
+            self.model_transformer_layers = nn.ModuleList(
+                modules = [
+                    Qwen2DecoderLayer(config=self.config.from_model_config, layer_idx=i)  # type:ignore
+                    for i in range(self.config.from_model_config.num_hidden_layers)
+                ]
+            ).to(
+                dtype=self.dtype,
+                device=self.device
             )
+
+            #
+            print(f"Custom model config initialized : {self.config.from_model_custom_config}")
 
 
     #
@@ -370,6 +506,8 @@ class ChunkedDiffusionSystem:
 
             #
             subline_toks: list[int] = self.tokenizer.encode(subline)  # type: ignore
+            #
+            subline_toks = [t % self.model.config.from_model_config.vocab_size for t in subline_toks]
             #
             subline_nb_toks: int = len(subline_toks)
 

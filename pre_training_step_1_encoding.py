@@ -1,10 +1,7 @@
 #
 ### Import modules. ###
 #
-from typing import cast, Optional
-#
-import os
-import json
+from typing import Optional, Any
 #
 import torch
 from torch import Tensor
@@ -12,99 +9,12 @@ from torch import nn
 from torch.nn import functional as F
 from torch.optim import Optimizer, AdamW
 #
-from transformers import (
-    AutoTokenizer, AutoModel,
-    PreTrainedTokenizer, PreTrainedModel,
-    BatchEncoding
-)
-from transformers.modeling_outputs import BaseModelOutputWithPooling
-#
 from datasets import Dataset  # type: ignore
 #
 from tqdm import tqdm  # type: ignore
 #
-from lib_load_from_hugging_face import load_dataset
 from lib_chunked_diffusion_model_config import ChunkedDiffusionModelConfig
 from lib_chunked_diffusion_model import ChunkedDiffusionSystem
-
-
-#
-### Helper function to prepare the training dataset. ###
-#
-def prepare_dataset() -> tuple[list[str], list[str]]:
-
-    #
-    train_lst: list[str] = []
-    test_lst: list[str] = []
-    #
-    cached_data_filtered_dataset: dict[str, list[str]] = {}
-
-    #
-    cache_folder: str = ".cache/"
-    #
-    filtered_dataset_cache: str = f"{cache_folder}filtered_dataset_cache.json"
-    #
-    if os.path.exists(filtered_dataset_cache):
-
-        #
-        with open(filtered_dataset_cache, "r", encoding="utf-8") as f:
-            #
-            cached_data_filtered_dataset = json.load(f)
-        #
-        train_lst = cached_data_filtered_dataset["train"]
-        test_lst = cached_data_filtered_dataset["test"]
-
-    #
-    else:
-
-        #
-        if not os.path.exists(cache_folder):
-            #
-            os.makedirs(cache_folder)
-
-        #
-        dataset1: Dataset = load_dataset(dataset_name = "Salesforce/wikitext", sub_dataset_name = 'wikitext-103-raw-v1')
-
-        #
-        print("Filter train dataset...")
-        #
-        for i in tqdm(range(len(dataset1['train']))):  # type: ignore
-
-            #
-            txt: str = cast(str, dataset1['train'][i]['text'] )
-
-            #
-            if len(txt) > 100:
-
-                #
-                train_lst.append( txt )
-
-        #
-        print("Filter test dataset...")
-        #
-        for i in tqdm(range(len(dataset1['test']))):  # type: ignore
-
-            #
-            txt: str = cast(str, dataset1['test'][i]['text'] )
-
-            #
-            if len(txt) > 100:
-
-                #
-                test_lst.append( txt )
-
-        #
-        cached_data_filtered_dataset = {
-            "train": train_lst,
-            "test": test_lst
-        }
-        #
-        with open(filtered_dataset_cache, "w", encoding="utf-8") as f:
-            #
-            json.dump(obj=cached_data_filtered_dataset, fp=f)
-
-    #
-    return train_lst, test_lst
 
 
 #
@@ -121,22 +31,35 @@ class Trainer:
         self.train_lst: list[str] = []
         self.test_lst: list[str] = []
         #
-        self.train_lst, self.test_lst = prepare_dataset()
-        #
-        self.test_lst = self.test_lst[:100]
+        self.train_truth_embeddings_tensors: list[Tensor] = []
+        self.test_truth_embeddings_tensors: list[Tensor] = []
 
         #
-        ### Prepare encoder parent model. ###
+        ### Loading test dataset. ###
         #
-        self.encoder_tokenizer: PreTrainedTokenizer = cast(PreTrainedTokenizer, AutoTokenizer.from_pretrained(encoder_model_path) )  # type: ignore
-        self.encoder_model: PreTrainedModel = cast(PreTrainedModel, AutoModel.from_pretrained(encoder_model_path, trust_remote_code=True) )  # type: ignore
-        self.encoder_hidden_size: int = self.encoder_model.config.hidden_size
+        cache: dict[str, Any] = torch.load(f=".cache/dataset_cache.pt")
+        #
+        self.train_lst = cache["train_texts"]
+        self.test_lst = cache["test_texts"]
+        self.train_truth_embeddings_tensors = cache["train_truth_embeddings_tensors"]
+        self.test_truth_embeddings_tensors = cache["test_truth_embeddings_tensors"]
+        #
+        self.encoder_hidden_size: int = self.train_truth_embeddings_tensors[0].shape[-1]
 
         #
         ### Init the chunked diffusion LLM model. ###
         #
         self.cdllm: ChunkedDiffusionSystem = ChunkedDiffusionSystem(
-            model_config=ChunkedDiffusionModelConfig()
+            model_config=ChunkedDiffusionModelConfig(
+                from_model_custom_config={
+                    "num_attention_heads": 4,
+                    "hidden_size": 32,
+                    "intermediate_size": 128,
+                    "num_hidden_layers": 4,
+                    "vocab_size": 128,
+                    "_attn_implementation": "eager",
+                }
+            )
         )
 
         #
@@ -161,27 +84,6 @@ class Trainer:
         )
         #
         self.mse_loss: nn.MSELoss = nn.MSELoss().to(device=self.cdllm.device)
-
-
-    #
-    def get_truth_embedding(self, text: str) -> Optional[Tensor]:
-
-        #
-        ### Tokenize the text. ###
-        #
-        batch_dict: BatchEncoding = self.encoder_tokenizer(text, max_length=8192, padding=True, truncation=True, return_tensors='pt')
-        #
-        outputs: BaseModelOutputWithPooling = self.encoder_model(**batch_dict)
-        #
-        if outputs.last_hidden_state is None:
-            #
-            return None
-
-        #
-        embeddings: Tensor = outputs.last_hidden_state[:, 0]
-
-        #
-        return embeddings
 
 
     #
@@ -270,16 +172,20 @@ class Trainer:
 
 
     #
-    def get_loss_on_embeddings(self, text: str) -> Optional[Tensor]:
+    def get_loss_on_embeddings(self, dataset_idx: int, from_dataset: str = "train") -> Optional[Tensor]:
 
         #
-        ### Get truth embedding. ###
-        #
-        truth_embedding = self.get_truth_embedding(text=text)
-        #
-        if truth_embedding is None:
+        if from_dataset == "train":
             #
-            return None
+            text = self.train_lst[dataset_idx]
+            #
+            truth_embedding = self.train_truth_embeddings_tensors[dataset_idx]
+        #
+        else:
+            #
+            text = self.test_lst[dataset_idx]
+            #
+            truth_embedding = self.test_truth_embeddings_tensors[dataset_idx]
 
         #
         ### Forward cdllm embedding. ###
@@ -313,12 +219,12 @@ class Trainer:
             #
             len_test: int = len(self.test_lst)
             #
-            for _i, text in tqdm(enumerate(self.test_lst), desc=f"Testing on {len_test} test exemples..."):
+            for i, _text in tqdm(enumerate(self.test_lst), desc=f"Testing on {len_test} test exemples..."):
 
                 #
                 ### Calculate embeddings and get loss. ###
                 #
-                loss: Optional[Tensor] = self.get_loss_on_embeddings(text=text)
+                loss: Optional[Tensor] = self.get_loss_on_embeddings(dataset_idx=i, from_dataset="test")
                 #
                 if not loss:
                     #
@@ -356,7 +262,7 @@ class Trainer:
         #
         pbar = tqdm(total=len(self.train_lst), desc="Training...")
         #
-        for i, text in enumerate(self.train_lst):
+        for i, _text in enumerate(self.train_lst):
 
             #
             ### Zero gradients before computing new ones. ###
@@ -366,7 +272,7 @@ class Trainer:
             #
             ### Calculate embeddings and get loss. ###
             #
-            loss: Optional[Tensor] = self.get_loss_on_embeddings(text=text)
+            loss: Optional[Tensor] = self.get_loss_on_embeddings(dataset_idx=i, from_dataset="train")
             #
             if not loss:
                 #

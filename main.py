@@ -1,7 +1,10 @@
 #
 ### Import Modules. ###
 #
+import os
+#
 from pre_training_step_1_encoding import main_step1_pretraining
+from pre_training_step_1a_preparing_encoding_dataset import main_step1a_preparing_dataset
 
 
 #
@@ -23,6 +26,13 @@ def main():
 
     #
     ### Pre-training step 1: SFT encoding by learning representations from another encoding model. ###
+    #
+    #
+    ## Preparing dataset... ##
+    #
+    if not os.path.exists(".cache/dataset_cache.pt"):
+        #
+        main_step1a_preparing_dataset()
     #
     main_step1_pretraining()
 
