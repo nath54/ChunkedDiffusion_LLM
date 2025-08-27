@@ -21,6 +21,8 @@ from datasets import Dataset  # type: ignore
 from tqdm import tqdm  # type: ignore
 #
 from lib_load_from_hugging_face import load_dataset
+#
+from lib_get_device import get_best_device
 
 
 #
@@ -108,7 +110,10 @@ def prepare_dataset() -> tuple[list[str], list[str]]:
 class DatasetPreparation:
 
     #
-    def __init__(self, encoder_model_path: str = 'Alibaba-NLP/gte-large-en-v1.5', n_train: int = 1000, n_test: int = 100) -> None:
+    def __init__(self, encoder_model_path: str = 'Alibaba-NLP/gte-large-en-v1.5', n_train: int = 40000, n_test: int = 1000) -> None:
+
+        #
+        self.device: str | torch.device = get_best_device()
 
         #
         ### Load dataset to train on. ###
@@ -125,7 +130,7 @@ class DatasetPreparation:
         ### Prepare encoder parent model. ###
         #
         self.encoder_tokenizer: PreTrainedTokenizer = cast(PreTrainedTokenizer, AutoTokenizer.from_pretrained(encoder_model_path) )  # type: ignore
-        self.encoder_model: PreTrainedModel = cast(PreTrainedModel, AutoModel.from_pretrained(encoder_model_path, trust_remote_code=True) )  # type: ignore
+        self.encoder_model: PreTrainedModel = cast(PreTrainedModel, AutoModel.from_pretrained(encoder_model_path, trust_remote_code=True).to(device=self.device) )  # type: ignore
         self.encoder_hidden_size: int = self.encoder_model.config.hidden_size
 
 
@@ -135,7 +140,7 @@ class DatasetPreparation:
         #
         ### Tokenize the text. ###
         #
-        batch_dict: BatchEncoding = self.encoder_tokenizer(text, max_length=8192, padding=True, truncation=True, return_tensors='pt')
+        batch_dict: BatchEncoding = self.encoder_tokenizer(text, max_length=8192, padding=True, truncation=True, return_tensors='pt').to(device=self.device)
         #
         outputs: BaseModelOutputWithPooling = self.encoder_model(**batch_dict)
         #
@@ -154,19 +159,30 @@ class DatasetPreparation:
     def prepare_dataset(self) -> None:
 
         #
-        train_texts: list[str] = []
-        test_texts: list[str] = []
+        if not os.path.exists(".cache/"):
+            #
+            os.makedirs(".cache/")
 
         #
-        train_truth_embeddings_tensors: list[Tensor] = []
-        test_truth_embeddings_tensors: list[Tensor] = []
+        if not os.path.exists(".cache/train_tensors/"):
+            #
+            os.makedirs(".cache/train_tensors/")
+
+        #
+        if not os.path.exists(".cache/test_tensors/"):
+            #
+            os.makedirs(".cache/test_tensors/")
+
+        #
+        train_texts: list[str] = []
+        test_texts: list[str] = []
 
         #
         ### Training dataset. ###
         #
         pbar = tqdm(total=len(self.train_lst), desc="Training dataset...")
         #
-        for text in self.train_lst:
+        for i, text in enumerate( self.train_lst ):
 
             #
             t: Optional[Tensor] = self.get_truth_embedding(text=text)
@@ -181,14 +197,20 @@ class DatasetPreparation:
 
             #
             train_texts.append( text )
-            train_truth_embeddings_tensors.append( t )
+            #
+            torch.save(
+                obj=t.cpu(),
+                f=f".cache/train_tensors/train_{i}.pt"
+            )
+            #
+            del t
 
         #
         ### Testing dataset. ###
         #
         pbar = tqdm(total=len(self.test_lst), desc="Testing dataset...")
         #
-        for text in self.test_lst:
+        for i, text in enumerate( self.test_lst ):
 
             #
             t: Optional[Tensor] = self.get_truth_embedding(text=text)
@@ -203,23 +225,24 @@ class DatasetPreparation:
 
             #
             test_texts.append( text )
-            test_truth_embeddings_tensors.append( t )
-
-        #
-        if not os.path.exists(".cache/"):
             #
-            os.makedirs(".cache/")
+            torch.save(
+                obj=t.cpu(),
+                f=f".cache/test_tensors/test_{i}.pt"
+            )
+            #
+            del t
 
         #
-        torch.save(
-            obj={
-                "train_texts": train_texts,
-                "test_texts": test_texts,
-                "train_truth_embeddings_tensors": train_truth_embeddings_tensors,
-                "test_truth_embeddings_tensors": test_truth_embeddings_tensors,
-            },
-            f=".cache/dataset_cache.pt"
-        )
+        with open(".cache/encoding_texts_dataset.json", "w", encoding="utf-8") as f:
+            #
+            json.dump(
+                obj={
+                    "train_texts": train_texts,
+                    "test_texts": test_texts,
+                },
+                fp = f
+            )
 
 
 #

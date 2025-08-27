@@ -30,7 +30,7 @@ def main():
     #
     ## Preparing dataset... ##
     #
-    if not os.path.exists(".cache/dataset_cache.pt"):
+    if not os.path.exists(".cache/encoding_texts_dataset.json"):
         #
         main_step1a_preparing_dataset()
     #

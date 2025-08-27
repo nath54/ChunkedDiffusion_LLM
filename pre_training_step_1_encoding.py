@@ -3,6 +3,8 @@
 #
 from typing import Optional, Any
 #
+import json
+#
 import torch
 from torch import Tensor
 from torch import nn
@@ -37,14 +39,18 @@ class Trainer:
         #
         ### Loading test dataset. ###
         #
-        cache: dict[str, Any] = torch.load(f=".cache/dataset_cache.pt")
+        with open(".cache/encoding_texts_dataset.json") as f:
+            #
+            cache: dict[str, Any] = json.load(fp=f)
+            #
+            self.train_lst = cache["train_texts"]
+            self.test_lst = cache["test_texts"]
         #
-        self.train_lst = cache["train_texts"]
-        self.test_lst = cache["test_texts"]
-        self.train_truth_embeddings_tensors = cache["train_truth_embeddings_tensors"]
-        self.test_truth_embeddings_tensors = cache["test_truth_embeddings_tensors"]
+        tmp: Tensor = torch.load(".cache/train_tensors/train_1.pt")
         #
-        self.encoder_hidden_size: int = self.train_truth_embeddings_tensors[0].shape[-1]
+        self.encoder_hidden_size: int = tmp.shape[-1]
+        #
+        del tmp
 
         #
         ### Init the chunked diffusion LLM model. ###
@@ -53,8 +59,8 @@ class Trainer:
             model_config=ChunkedDiffusionModelConfig(
                 from_model_custom_config={
                     "num_attention_heads": 4,
-                    "hidden_size": 32,
-                    "intermediate_size": 128,
+                    "hidden_size": 1024,
+                    "intermediate_size": 4096,
                     "num_hidden_layers": 4,
                     "vocab_size": 128,
                     "_attn_implementation": "eager",
@@ -175,17 +181,20 @@ class Trainer:
     def get_loss_on_embeddings(self, dataset_idx: int, from_dataset: str = "train") -> Optional[Tensor]:
 
         #
+        text: str
+        truth_embedding: Tensor
+        #
         if from_dataset == "train":
             #
             text = self.train_lst[dataset_idx]
             #
-            truth_embedding = self.train_truth_embeddings_tensors[dataset_idx]
+            truth_embedding = torch.load(".cache/train_tensors/train_1.pt")
         #
         else:
             #
             text = self.test_lst[dataset_idx]
             #
-            truth_embedding = self.test_truth_embeddings_tensors[dataset_idx]
+            truth_embedding = torch.load(".cache/test_tensors/test_1.pt")
 
         #
         ### Forward cdllm embedding. ###
@@ -196,6 +205,9 @@ class Trainer:
         ### Calculate loss. ###
         #
         loss: Tensor = self.loss_fn(truth_embedding=truth_embedding, cdllm_embedding=cdllm_embedding)
+
+        #
+        del truth_embedding
 
         #
         return loss
