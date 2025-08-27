@@ -258,6 +258,52 @@ class ChunkedDiffusionModel(nn.Module):
 
 
     #
+    def apply_modification_to_hidden_state(
+        self,
+        hidden_state: Tensor,
+        modified_hidden_states: Optional[list[dict[int, Tensor]]] = None,
+        embedding_overide: Optional[list[tuple[ tuple[int, ...], tuple[int, ...], Tensor ]]] = None,  # (start_idx, end_idx, Tensor)
+    ) -> Tensor:
+
+        #
+        if modified_hidden_states is not None:
+
+            #
+            for batch_idx, crt_batch_modified_hidden_states in enumerate( modified_hidden_states ):
+
+                #
+                for tok_id, modified_hidden_state in crt_batch_modified_hidden_states.items():
+
+                    #
+                    if hidden_state.ndim == 2 and batch_idx == 0:
+                        #
+                        hidden_state[tok_id, :] = modified_hidden_state
+
+                    #
+                    elif hidden_state.ndim == 3:
+                        #
+                        hidden_state[batch_idx, tok_id, :] = modified_hidden_state
+
+        #
+        if embedding_overide:
+
+            #
+            for start_idx, end_idx, tensor_to_overide in embedding_overide:
+
+                #
+                if len(start_idx) == 2:
+                    #
+                    hidden_state[0, start_idx[0]: end_idx[0], start_idx[1]:end_idx[1]] = tensor_to_overide
+                #
+                elif len(start_idx) == 3:
+                    #
+                    hidden_state[start_idx[0]: end_idx[0], start_idx[1]:end_idx[1], start_idx[2]:end_idx[2]] = tensor_to_overide
+
+        #
+        return hidden_state
+
+
+    #
     def forward_from_hidden_state(
         self,
         hidden_state: Tensor,   # Dim: (B?, C, d_E)
@@ -266,6 +312,8 @@ class ChunkedDiffusionModel(nn.Module):
         position_ids: Tensor,
         position_embeddings: tuple[Tensor, Tensor],
         use_cache: bool = False,
+        modified_hidden_states: Optional[list[dict[int, Tensor]]] = None,
+        embedding_overide: Optional[list[tuple[ tuple[int, ...], tuple[int, ...], Tensor ]]] = None,  # (start_idx, end_idx, Tensor)
     ) -> tuple[Tensor, Tensor]:
 
         #
@@ -278,6 +326,13 @@ class ChunkedDiffusionModel(nn.Module):
         if permissions_mask.ndim == 2:
             #
             permissions_mask = permissions_mask.unsqueeze(0)
+
+        #
+        hidden_state = self.apply_modification_to_hidden_state(
+            hidden_state=hidden_state,
+            modified_hidden_states = modified_hidden_states,
+            embedding_overide = embedding_overide
+        )
 
         #
         for layer in self.model_transformer_layers:  # type: ignore
@@ -329,6 +384,7 @@ class ChunkedDiffusionModel(nn.Module):
         attention_causal_mask: Tensor,
         use_cache: bool = False,
         modified_hidden_states: Optional[list[dict[int, Tensor]]] = None,
+        embedding_overide: Optional[list[tuple[ tuple[int, ...], tuple[int, ...], Tensor ]]] = None,  # (start_idx, end_idx, Tensor)
     ) -> tuple[Tensor, Tensor]:
 
         #
@@ -347,23 +403,11 @@ class ChunkedDiffusionModel(nn.Module):
         # Dim: (B?, C, d_E)
 
         #
-        if modified_hidden_states is not None:
-
-            #
-            for batch_idx, crt_batch_modified_hidden_states in enumerate( modified_hidden_states ):
-
-                #
-                for tok_id, modified_hidden_state in crt_batch_modified_hidden_states.items():
-
-                    #
-                    if hidden_state.ndim == 2 and batch_idx == 0:
-                        #
-                        hidden_state[tok_id, :] = modified_hidden_state
-
-                    #
-                    elif hidden_state.ndim == 3:
-                        #
-                        hidden_state[batch_idx, tok_id, :] = modified_hidden_state
+        hidden_state = self.apply_modification_to_hidden_state(
+            hidden_state=hidden_state,
+            modified_hidden_states = modified_hidden_states,
+            embedding_overide = embedding_overide
+        )
 
         #
         ### Create position_ids: standard 0 to seq-1, expanded for batch ###
@@ -711,11 +755,14 @@ class ChunkedDiffusionSystem:
         self,
         chunk: Chunk,
         with_globals: bool = True
-    ) -> tuple[Tensor, Tensor, Tensor]:  # Returns (context tokens, permissions masks, causal mask)
+    ) -> tuple[Tensor, Tensor, Tensor, list[ tuple[tuple[int, ...], tuple[int, ...], Tensor] ]]:  # Returns (context tokens, permissions masks, causal mask)
 
         #
         context_tokens: Tensor
         permissions_mask: Tensor
+
+        #
+        embedding_overide: list[ tuple[tuple[int, ...], tuple[int, ...], Tensor] ] = []
 
         #
         ### With globals. ###
@@ -724,10 +771,49 @@ class ChunkedDiffusionSystem:
             #
             ### Concatenating in the sequence dimension, whereas there is a batch_size or not. ###
             #
-            context_tokens = torch.cat( tensors=[
-                chunk.chunk_context_data,
-                chunk.chunk_global_context_data
-            ], dim = -1 )
+            seq_length: int = chunk.chunk_context_data.shape[-1]
+            #
+            if chunk.chunk_context_data.ndim == 1:
+                #
+                context_tokens = torch.cat( tensors=[
+                    chunk.chunk_context_data,
+                    torch.zeros(
+                        size=(chunk.chunk_global_context_data.shape[-2],),
+                        dtype=chunk.chunk_context_data.dtype,
+                        device=chunk.chunk_context_data.device
+                    )
+                ], dim = -1 )
+                #
+                embedding_overide.append(
+                    (
+                        (seq_length, 0),
+                        (seq_length+chunk.chunk_global_context_data.shape[-2], chunk.chunk_global_context_data.shape[-1]),
+                        chunk.chunk_global_context_data
+                    )
+                )
+            #
+            elif chunk.chunk_context_data.ndim == 2:
+                #
+                context_tokens = torch.cat( tensors=[
+                    chunk.chunk_context_data,
+                    torch.zeros(
+                        size=(chunk.chunk_context_data.shape[0], chunk.chunk_global_context_data.shape[-2]),
+                        dtype=chunk.chunk_context_data.dtype,
+                        device=chunk.chunk_context_data.device
+                    )
+                ], dim = -1 )
+                #
+                embedding_overide.append(
+                    (
+                        (0, seq_length, 0),
+                        (0, seq_length+chunk.chunk_global_context_data.shape[-2], chunk.chunk_global_context_data.shape[-1]),
+                        chunk.chunk_global_context_data
+                    )
+                )
+            #
+            else:
+                #
+                raise UserWarning("Erro")
             #
             permissions_mask = torch.cat( tensors=[
                 chunk.permission_mask_context_data,
@@ -746,7 +832,7 @@ class ChunkedDiffusionSystem:
         attention_causal_mask: Tensor = self.prepare_attention_causal_mask_from_permissions_mask(permissions_mask=permissions_mask)
 
         #
-        return context_tokens, permissions_mask, attention_causal_mask
+        return context_tokens, permissions_mask, attention_causal_mask, embedding_overide
 
 
     #
@@ -866,27 +952,7 @@ class ChunkedDiffusionSystem:
     def encode_one_chunk(self, chunk: Chunk, chunk_modified_hidden_states: Optional[dict[int, Tensor]] = None) -> Tensor:
 
         #
-        context_tokens, permissions_mask, causal_mask = self.prepare_context_and_masks_for_one_chunk(chunk=chunk, with_globals=True)
-
-        #
-        if permissions_mask.ndim == 2:
-            #
-            globals_idx: Tensor = ( permissions_mask[ :, self.model.config.permissions_mask_indexes["chunk_global_read_and_write"] ] > 0.5 )
-        #
-        elif permissions_mask.ndim == 3:
-            #
-            ### Now batch-safe (B, seq). ###
-            #
-            globals_idx = (permissions_mask[:, :, self.model.config.permissions_mask_indexes["chunk_global_read_and_write"]] > 0.5)
-        #
-        else:
-            #
-            raise UserWarning(f"Bad permissions_mask ndim = {permissions_mask.ndim}")
-
-        #
-        ### TODO: verify and ensure the global_idx to a batched boolean vector along the sequence with a True if there is at least one True un the last dimension ###
-        #
-        pass
+        context_tokens, permissions_mask, causal_mask, embedding_overide = self.prepare_context_and_masks_for_one_chunk(chunk=chunk, with_globals=True)
 
         #
         batched_chunk_modified_hidden_states: Optional[list[dict[int, Tensor]]] = None
@@ -900,16 +966,63 @@ class ChunkedDiffusionSystem:
             input_ids=context_tokens,
             permissions_mask=permissions_mask,
             attention_causal_mask=causal_mask,
-            modified_hidden_states=batched_chunk_modified_hidden_states
+            modified_hidden_states=batched_chunk_modified_hidden_states,
+            embedding_overide=embedding_overide
         )
 
         #
-        if globals_idx.ndim == 1:
-            #
-            globals_idx = globals_idx.unsqueeze(0)
+        ### Extract global positions correctly. ###
+        #
+        global_write_idx = self.model.config.permissions_mask_indexes["chunk_global_read_and_write"]
 
         #
-        return hidden_states[globals_idx]
+        if permissions_mask.ndim == 2:
+            #
+            ### Unbatched case. ###
+            #
+            globals_mask = (permissions_mask[:, global_write_idx] > 0.5)
+            #
+            if hidden_states.ndim == 2:
+                #
+                global_states = hidden_states[globals_mask]
+            #
+            elif hidden_states.ndim == 3:
+                #
+                global_states = hidden_states[globals_mask.unsqueeze(0)]
+            #
+            else:
+                #
+                raise UserWarning("Error")
+        #
+        else:
+            #
+            ### Batched case (should be single batch for this function). ###
+            #
+            globals_mask = (permissions_mask[0, :, global_write_idx] > 0.5)
+            #
+            global_states = hidden_states[0, globals_mask]
+
+        #
+        ### Reshape to expected dimensions. ###
+        #
+        expected_length = chunk.chunk_global_context_length
+        #
+        if global_states.shape[0] < expected_length:
+            #
+            ### Pad if needed. ###
+            #
+            padding = torch.zeros((expected_length - global_states.shape[0], global_states.shape[1]), dtype=global_states.dtype, device=global_states.device)
+            #
+            global_states = torch.cat([global_states, padding], dim=0)
+        #
+        elif global_states.shape[0] > expected_length:
+            #
+            ### Truncate if needed. ###
+            #
+            global_states = global_states[:expected_length]
+
+        #
+        return global_states
 
 
     #
@@ -921,10 +1034,14 @@ class ChunkedDiffusionSystem:
         attentions_masks: list[ Tensor ] = []
 
         #
+        ### TODO: manage correctly the `embedding_overide` along the batched dimensions. ###
+        #
+
+        #
         for chunk in chunks:
 
             #
-            context_tokens, permissions_mask, causal_mask = self.prepare_context_and_masks_for_one_chunk(chunk=chunk, with_globals=True)
+            context_tokens, permissions_mask, causal_mask, _embedding_overide = self.prepare_context_and_masks_for_one_chunk(chunk=chunk, with_globals=True)
             #
             contexts_tokens.append(context_tokens)
             permissions_masks.append(permissions_mask)
@@ -946,20 +1063,38 @@ class ChunkedDiffusionSystem:
         )
 
         #
-        globals_idx: Tensor = (batched_permissions[:, :, self.model.config.permissions_mask_indexes["chunk_global_read_and_write"]] > 0.5)
+        ### Extract global states for all batches. ###
+        #
+        global_write_idx = self.model.config.permissions_mask_indexes["chunk_global_read_and_write"]
+        globals_mask = (batched_permissions[:, :, global_write_idx] > 0.5)  # (batch_size, seq_len)
 
         #
-        ### TODO: verify and ensure the global_idx to a batched boolean vector along the sequence with a True if there is at least one True un the last dimension ###
+        batch_size = hidden_states.shape[0]
         #
-        pass
+        expected_global_length = chunks[0].chunk_global_context_length
+        #
+        hidden_size = hidden_states.shape[-1]
 
         #
-        if globals_idx.ndim == 1:
+        ### Initialize output tensor. ###
+        #
+        batched_global_states = torch.zeros((batch_size, expected_global_length, hidden_size),
+                                        dtype=hidden_states.dtype, device=hidden_states.device)
+
+        #
+        ### Extract global states for each batch element. ###
+        #
+        for batch_idx in range(batch_size):
             #
-            globals_idx = globals_idx.unsqueeze(0)
+            batch_globals_mask = globals_mask[batch_idx]
+            batch_global_states = hidden_states[batch_idx, batch_globals_mask]
+
+            #
+            actual_length = min(batch_global_states.shape[0], expected_global_length)
+            batched_global_states[batch_idx, :actual_length] = batch_global_states[:actual_length]
 
         #
-        return hidden_states[globals_idx]
+        return batched_global_states
 
 
     #

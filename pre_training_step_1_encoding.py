@@ -188,13 +188,13 @@ class Trainer:
             #
             text = self.train_lst[dataset_idx]
             #
-            truth_embedding = torch.load(".cache/train_tensors/train_1.pt")
+            truth_embedding = torch.load(f".cache/train_tensors/train_{dataset_idx}.pt")
         #
         else:
             #
             text = self.test_lst[dataset_idx]
             #
-            truth_embedding = torch.load(".cache/test_tensors/test_1.pt")
+            truth_embedding = torch.load(f".cache/test_tensors/test_{dataset_idx}.pt")
 
         #
         ### Forward cdllm embedding. ###
