@@ -191,7 +191,8 @@ class ChunkedDiffusionModel(nn.Module):
         input_ids: Tensor,  # Dim: (B?, C, d_E)
         permissions_mask: Tensor,  # Dim: (B?, C, k)
         attention_causal_mask: Tensor,
-        use_cache: bool = False
+        use_cache: bool = False,
+        modified_hidden_states: Optional[dict[int, Tensor]] = None,
     ) -> tuple[Tensor, Tensor]:
 
         #
@@ -208,6 +209,22 @@ class ChunkedDiffusionModel(nn.Module):
         #
         hidden_state: Tensor = self.model_embedding_layer(input_ids)  # type: ignore
         # Dim: (B?, C, d_E)
+
+        #
+        if modified_hidden_states is not None:
+
+            #
+            for tok_id, modified_hidden_state in modified_hidden_states.items():
+
+                #
+                if hidden_state.ndim == 2:
+                    #
+                    hidden_state[tok_id, :] = modified_hidden_state
+
+                #
+                elif hidden_state.ndim == 3:
+                    #
+                    hidden_state[0, tok_id, :] = modified_hidden_state
 
         #
         ### Create position_ids: standard 0 to seq-1, expanded for batch ###
@@ -229,47 +246,6 @@ class ChunkedDiffusionModel(nn.Module):
             position_ids=position_ids,
             position_embeddings=position_embeddings,
             use_cache=use_cache
-        )
-
-
-    #
-    def diffuse_one_step(
-        self,
-        input_hidden_state: Tensor,
-        permissions_mask: Tensor,
-        output_hidden_state: Tensor,
-        output_logits: Tensor,
-        current_chunk_id: int,
-        remaining_diffusion_steps: int = 16,
-    ) -> tuple[Tensor, int, int]:  # (new_hidden_state, new_chunk_id, remaining_diffusion_steps)
-
-        #
-        ### TODO. ###
-        #
-        pass
-
-        #
-        return (input_hidden_state, current_chunk_id, remaining_diffusion_steps)
-
-
-    #
-    def token_prediction_at_cursor(
-        self,
-        cursor: int,
-        input_ids: Tensor,  # Dim: (B?, C, d_E)
-        permissions_mask: Tensor,  # Dim: (B?, C, k)
-        attention_causal_mask: Tensor,
-        use_cache: bool = False,
-    ) -> Tensor:  # Returns the logits for the token prediction at the cursor.
-
-        #
-        ### TODO. ###
-        #
-        pass
-
-        #
-        return torch.tensor(
-            [1.0 if i == self.config.tokenizer_eos_token else 0 for i in range(self.config.from_model_config_voc_length)]
         )
 
 
@@ -355,7 +331,7 @@ class ChunkedDiffusionSystem:
             permissions_items=self.model.config.permissions_mask_indexes,
             chunk_length = self.model.config.chunk_length,
             chunk_global_context_length = override_chunk_global_lenght if override_chunk_global_lenght is not None else self.model.config.chunk_global_context_length,
-            initial_data=torch.tensor(chunk_tok_ids, dtype=torch.int64, device=self.device),
+            initial_data=torch.tensor(chunk_tok_ids, dtype=torch.int64, device=self.device) if chunk_tok_ids else None,
             initial_data_permissions_mask=None,
             padding_token=self.model.config.tokenizer_pad_token,
             dtype=self.dtype,
@@ -364,10 +340,11 @@ class ChunkedDiffusionSystem:
 
 
     #
-    def split_text_of_one_document_in_chunks(self, text: str, override_chunk_global_lenght: Optional[int] = None) -> list[Chunk]:
+    def split_text_of_one_document_in_chunks(self, text: str, override_chunk_global_lenght: Optional[int] = None) -> tuple[ list[Chunk], list[int] ]:
 
         #
         text_chunks: list[Chunk] = []
+        chunks_lengths: list[int] = []
 
         #
         text_sublines: list[str] = []
@@ -417,6 +394,8 @@ class ChunkedDiffusionSystem:
                         self.create_chunk_from_list_of_tokens(chunk_tok_ids=subline_toks[:self.model.config.chunk_length], override_chunk_global_lenght=override_chunk_global_lenght)
                     )
                     #
+                    chunks_lengths.append( current_chunk_nb_tokens )
+                    #
                     subline_toks = subline_toks[self.model.config.chunk_length:]
                     subline_nb_toks = len(subline_toks)
                 #
@@ -432,6 +411,8 @@ class ChunkedDiffusionSystem:
                     self.create_chunk_from_list_of_tokens(chunk_tok_ids=current_chunk_token_ids, override_chunk_global_lenght=override_chunk_global_lenght)
                 )
                 #
+                chunks_lengths.append( current_chunk_nb_tokens )
+                #
                 current_chunk_token_ids = subline_toks
                 current_chunk_nb_tokens = subline_nb_toks
 
@@ -443,9 +424,11 @@ class ChunkedDiffusionSystem:
             text_chunks.append(
                 self.create_chunk_from_list_of_tokens(chunk_tok_ids=current_chunk_token_ids, override_chunk_global_lenght=override_chunk_global_lenght)
             )
+            #
+            chunks_lengths.append( current_chunk_nb_tokens )
 
         #
-        return text_chunks
+        return text_chunks, chunks_lengths
 
 
     #
@@ -453,10 +436,10 @@ class ChunkedDiffusionSystem:
         self,
         text: str,
         documents: Optional[dict[str, str]] = None,
-    ) -> tuple[list[str], list[int], list[Chunk]]:
+    ) -> tuple[list[str], list[int], list[Chunk], list[int]]:
 
         #
-        documents_chunks: dict[str, list[Chunk]] = {}
+        documents_chunks: dict[str, tuple[list[Chunk], list[int]]] = {}
 
         #
         if documents is not None:
@@ -467,12 +450,16 @@ class ChunkedDiffusionSystem:
             }
 
         #
-        text_chunks: list[Chunk] = self.split_text_of_one_document_in_chunks(text=text)
+        text_chunks: list[Chunk]
+        text_chunks_length: list[int]
+        #
+        text_chunks, text_chunks_length = self.split_text_of_one_document_in_chunks(text=text)
 
         #
         chunks_documents: list[str] = []
         chunks_documents_idx: list[int] = []
         chunks: list[Chunk] = []
+        chunks_lengths: list[int] = []
 
         #
         chunk: Chunk
@@ -483,31 +470,34 @@ class ChunkedDiffusionSystem:
             chunks_documents.append( document_title )
 
             #
-            for chunk in documents_chunks[document_title]:
+            for chunk, chunk_length in zip(*documents_chunks[document_title]):
                 #
                 chunks_documents_idx.append( document_idx )
                 #
                 chunks.append(chunk)
+                chunks_lengths.append(chunk_length)
 
         #
         main_document_idx: int = len(chunks_documents)
         #
         chunks_documents.append( "main context" )
         #
-        for chunk in text_chunks:
+        for chunk, chunk_length in zip( text_chunks, text_chunks_length ):
             #
             chunks_documents_idx.append( main_document_idx )
             #
             chunks.append(chunk)
+            chunks_lengths.append(chunk_length)
 
         #
-        return chunks_documents, chunks_documents_idx, chunks
+        return chunks_documents, chunks_documents_idx, chunks, chunks_lengths
 
 
     #
     def prepare_attention_causal_mask_from_permissions_mask(
         self,
-        permissions_mask: Tensor
+        permissions_mask: Tensor,
+        hide_hidden: bool = False,
     ) -> Tensor:
 
         #
@@ -521,29 +511,54 @@ class ChunkedDiffusionSystem:
         tri: Tensor = torch.tril(torch.ones((seq_len, seq_len), dtype=torch.bool, device=self.device))
 
         #
-        ### Identify non-hidden positions (first permission > 0.5 means hidden). ###
-        #
-        not_hidden: Tensor = permissions_mask[..., self.model.config.permissions_mask_indexes["hidden"]] <= 0.5  # Shape: (B?, seq_len)
-
-        #
-        ### Broadcast not_hidden to mask entire src columns for hidden tokens ###
-        ### & combines causal with hidden mask (elementwise AND) ###
-        #
         attention_causal_mask: Tensor
         #
-        ### Batched case. ###
+        ### Hide hiddens. ###
         #
-        if permissions_mask.ndim == 3:
+        if hide_hidden:
+
             #
-            attention_causal_mask = tri[None, :, :] & not_hidden[:, None, :]
-            attention_causal_mask = attention_causal_mask.unsqueeze(1)  # Add head dim: (B, 1, seq, seq)
-        #
-        ### Unbatched case. ###
+            ### Identify non-hidden positions (first permission > 0.5 means hidden). ###
+            #
+            not_hidden: Tensor = permissions_mask[..., self.model.config.permissions_mask_indexes["hidden"]] <= 0.5  # Shape: (B?, seq_len)
+
+            #
+            ### Broadcast not_hidden to mask entire src columns for hidden tokens ###
+            ### & combines causal with hidden mask (elementwise AND) ###
+            #
+            ### Batched case. ###
+            #
+            if permissions_mask.ndim == 3:
+                #
+                attention_causal_mask = tri[None, :, :] & not_hidden[:, None, :]
+                attention_causal_mask = attention_causal_mask.unsqueeze(1)  # Add head dim: (B, 1, seq, seq)
+            #
+            ### Unbatched case. ###
+            #
+            else:
+                #
+                attention_causal_mask = tri & not_hidden[None, :]
+                attention_causal_mask = attention_causal_mask.unsqueeze(0).unsqueeze(0)  # (1, 1, seq, seq)
+
         #
         else:
+
             #
-            attention_causal_mask = tri & not_hidden[None, :]
-            attention_causal_mask = attention_causal_mask.unsqueeze(0).unsqueeze(0)  # (1, 1, seq, seq)
+            ### Broadcast not_hidden to mask entire src columns for hidden tokens ###
+            #
+            ### Batched case. ###
+            #
+            if permissions_mask.ndim == 3:
+                #
+                attention_causal_mask = tri[None, :, :]
+                attention_causal_mask = attention_causal_mask.unsqueeze(1)  # Add head dim: (B, 1, seq, seq)
+            #
+            ### Unbatched case. ###
+            #
+            else:
+                #
+                attention_causal_mask = tri
+                attention_causal_mask = attention_causal_mask.unsqueeze(0).unsqueeze(0)  # (1, 1, seq, seq)
 
         #
         return attention_causal_mask
@@ -613,7 +628,7 @@ class ChunkedDiffusionSystem:
 
 
     #
-    def encode_one_chunk(self, chunk: Chunk) -> Tensor:
+    def encode_one_chunk(self, chunk: Chunk, chunk_modified_hidden_states: Optional[dict[int, Tensor]] = None) -> Tensor:
 
         #
         context_tokens, permissions_mask, causal_mask = self.prepare_context_and_masks_for_one_chunk(chunk=chunk, with_globals=True)
@@ -637,7 +652,8 @@ class ChunkedDiffusionSystem:
         _logits, hidden_states = self.model.forward(
             input_ids=context_tokens,
             permissions_mask=permissions_mask,
-            attention_causal_mask=causal_mask
+            attention_causal_mask=causal_mask,
+            modified_hidden_states=chunk_modified_hidden_states
         )
 
         #
@@ -704,15 +720,18 @@ class ChunkedDiffusionSystem:
     #
     def prepare_context_and_masks_for_all_chunks(
         self,
-        chunk_documents: list[str],
-        chunk_documents_idx: list[int],
+        chunks_documents: list[str],
+        chunks_documents_idx: list[int],
         chunks: list[Chunk],
-        current_chunk: int
-    ) -> tuple[Tensor, Tensor, Tensor]:  # Returns (context tokens, permissions masks, causal mask)
+        current_chunk: int,
+        chunks_modified_hidden_states: Optional[dict[int, dict[int, Tensor]]] = None,
+    ) -> tuple[Tensor, Tensor, Tensor, int]:  # Returns (context tokens, permissions masks, causal mask, current_chunk_context_start_pos_idx)
 
         #
         contexts_tensors: list[ Tensor ] = []
         permissions_tensors: list[ Tensor ] = []
+        #
+        current_chunk_context_start_pos_idx: int = 0
 
         #
         ### First document separation and title
@@ -728,7 +747,7 @@ class ChunkedDiffusionSystem:
         #
         applst(
             contexts_tensors, permissions_tensors,
-            *self.context_and_permissions_from_doc_title(doc_title=chunk_documents[0])
+            *self.context_and_permissions_from_doc_title(doc_title=chunks_documents[0])
         )
         #
         ## Content and title Separation. ##
@@ -747,10 +766,10 @@ class ChunkedDiffusionSystem:
             #
             ### If document change. ###
             #
-            if chunk_documents_idx[id_chunk] != crt_doc_idx:
+            if chunks_documents_idx[id_chunk] != crt_doc_idx:
 
                 #
-                crt_doc_idx = chunk_documents_idx[id_chunk]
+                crt_doc_idx = chunks_documents_idx[id_chunk]
 
                 #
                 ## Separation. ##
@@ -764,7 +783,7 @@ class ChunkedDiffusionSystem:
                 #
                 applst(
                     contexts_tensors, permissions_tensors,
-                    *self.context_and_permissions_from_doc_title(doc_title=chunk_documents[crt_doc_idx])
+                    *self.context_and_permissions_from_doc_title(doc_title=chunks_documents[crt_doc_idx])
                 )
                 #
                 ## Content and title Separation. ##
@@ -778,6 +797,12 @@ class ChunkedDiffusionSystem:
             ### If current chunk. ###
             #
             if current_chunk == id_chunk:
+
+                #
+                ### Get the current chunk context pos idx. ###
+                #
+                current_chunk_context_start_pos_idx = int( sum( [ctx_tens.shape[-2] for ctx_tens in contexts_tensors] ) )
+
                 #
                 ### Chunk Context with chunk separation at the end. ###
                 #
@@ -813,46 +838,218 @@ class ChunkedDiffusionSystem:
         permissions_mask: Tensor = torch.cat( tensors=permissions_tensors, dim=-2 )
 
         #
+        if chunks_modified_hidden_states is not None and current_chunk in chunks_modified_hidden_states:
+
+            #
+            for tok_id, modified_hidden_state in chunks_modified_hidden_states[current_chunk].items():
+
+                #
+                if context.ndim == 2:
+                    #
+                    context[tok_id, :] = modified_hidden_state
+                #
+                elif context.ndim == 3:
+                    #
+                    context[0, tok_id, :] = modified_hidden_state
+
+        #
         attention_causal_mask: Tensor = self.prepare_attention_causal_mask_from_permissions_mask( permissions_mask=permissions_mask )
 
         #
-        return context, permissions_mask, attention_causal_mask
+        return context, permissions_mask, attention_causal_mask, current_chunk_context_start_pos_idx
 
 
     #
-    def next_word_prediction(
-        chunk_documents: list[str],
-        chunk_documents_idx: list[int],
-        chunks: list[Chunk],
-        current_chunk_idx: int,
-        cursor_pos_in_chunk: int = -1,
-    ) -> tuple[ list[Chunk], int, int ]:  # (chunks, next_chunk_idx, next_cursor_pos_in_chunk)
-
-        #
-        ### TODO. ###
-        #
-        pass
-
-        #
-        return (chunks, current_chunk_idx, cursor_pos_in_chunk)
-
-
-    #
-    def fill_in_blanks(
+    def next_token_prediction_chunks(
         self,
-        chunk_documents: list[str],
-        chunk_documents_idx: list[int],
+        chunks_documents: list[str],
+        chunks_documents_idx: list[int],
         chunks: list[Chunk],
-        where_to_fill: list[tuple[int, int]],  # liste de tuples: (chunk_idx, cursos_position_in_chunk_idx)
-    ) -> list[Chunk]:
+        chunks_lengths: list[int],
+        current_chunk_idx: int,
+        cursor_pos_in_current_chunk: int,
+        chunks_modified_hidden_states: dict[int, dict[int, Tensor]],
+        use_cache: bool = False,
+    ) -> tuple[ Tensor, dict[int, dict[int, Tensor]] ]:  # (new_logits_at_cursor, chunks_modified_hidden_states)
 
         #
-        ### TODO. ###
+        ### Prepare the global context from the chunks ###
         #
-        pass
+        context: Tensor
+        permissions_mask: Tensor
+        attention_causal_mask: Tensor
+        current_chunk_context_start_pos_idx: int
+        #
+        context, permissions_mask, attention_causal_mask, current_chunk_context_start_pos_idx = self.prepare_context_and_masks_for_all_chunks(
+            chunks_documents=chunks_documents,
+            chunks_documents_idx=chunks_documents_idx,
+            chunks=chunks,
+            current_chunk=current_chunk_idx,
+            chunks_modified_hidden_states=chunks_modified_hidden_states
+        )
 
         #
-        return chunks
+        ### Calculate the current token precice idx in the context. ###
+        #
+        cursor_pos: int = current_chunk_context_start_pos_idx + cursor_pos_in_current_chunk
+
+        #
+        ### Update the permissions mask to indicate we want to predict a certain token. ###
+        #
+        if permissions_mask.ndim == 2:
+            #
+            permissions_mask[cursor_pos, :] = self.permissions_vectors["next_token_prediction_cursor"]
+        #
+        elif permissions_mask.ndim == 3:
+            #
+            permissions_mask[0, cursor_pos, :] = self.permissions_vectors["next_token_prediction_cursor"]
+
+        #
+        ### Forward the model to get logits and hidden_state outputs. ###
+        #
+        logits, hidden_state = self.model.forward(
+            input_ids=context,
+            permissions_mask=permissions_mask,
+            attention_causal_mask=attention_causal_mask,
+            use_cache=use_cache
+        )
+
+        #
+        ### Get the new logits to return. ###
+        #
+        new_logits_at_cursor: Tensor = logits[cursor_pos]
+
+        #
+        ### Update the chunks modified hidden_states. ###
+        #
+        if current_chunk_idx not in chunks_modified_hidden_states:
+            #
+            chunks_modified_hidden_states[current_chunk_idx] = {}
+        #
+        chunks_modified_hidden_states[current_chunk_idx][cursor_pos] = hidden_state[cursor_pos]
+
+        #
+        ### Return results and updated variables. ###
+        #
+        return (new_logits_at_cursor, chunks_modified_hidden_states)
+
+
+    #
+    def next_token_prediction_logits(
+        self,
+        text: str,
+        documents: Optional[dict[str, str]] = None,
+        max_length: int = 128,
+        stop_if_eos_token: bool = True,
+    ) -> Tensor:
+
+        #
+        ### Split text into chunks. ###
+        #
+        chunks_documents: list[str]
+        chunks_documents_idx: list[int]
+        chunks: list[Chunk]
+        chunks_lengths: list[int]
+        #
+        chunks_documents, chunks_documents_idx, chunks, chunks_lengths = self.split_text_in_chunks(
+            text=text,
+            documents=documents
+        )
+        #
+        chunks = self.init_all_chunks_global_context_with_chunk_encoding(chunks=chunks)
+        #
+        chunks_modified_hidden_states: dict[int, dict[int, Tensor]] = {}
+
+        #
+        all_new_logits: list[Tensor] = []
+        #
+        nb_generated_tokens: int = 0
+
+        #
+        ### Because we do next token prediction
+        #
+        current_chunk_idx: int = len(chunks) - 1
+        cursor_pos_in_current_chunk: int = chunks_lengths[current_chunk_idx]
+        #
+        while nb_generated_tokens < max_length:
+
+            #
+            if cursor_pos_in_current_chunk >= self.model.config.chunk_length:
+
+                #
+                ### Update the global encoding of the previous chunk and create a new chunk. ###
+                #
+                chunks[current_chunk_idx].chunk_global_context_data = self.encode_one_chunk(chunks[current_chunk_idx])  # type: ignore
+                #
+                chunks_documents_idx.append( len(chunks_documents) - 1 )
+                chunks.append( self.create_chunk_from_list_of_tokens(chunk_tok_ids = []) )  # type: ignore
+                chunks_lengths.append( 0 )  # type: ignore
+                #
+                current_chunk_idx += 1
+                cursor_pos_in_current_chunk = 0
+
+            #
+            ### Predict next logits. ###
+            #
+            new_logits_at_cursor: Tensor
+            #
+            new_logits_at_cursor, chunks_modified_hidden_states = self.next_token_prediction_chunks(
+                chunks_documents = chunks_documents,
+                chunks_documents_idx = chunks_documents_idx,
+                chunks = chunks,
+                chunks_lengths = chunks_lengths,
+                current_chunk_idx = current_chunk_idx,
+                chunks_modified_hidden_states=chunks_modified_hidden_states,
+                cursor_pos_in_current_chunk = cursor_pos_in_current_chunk,
+            )
+            #
+            all_new_logits.append( new_logits_at_cursor )
+            #
+            if stop_if_eos_token:
+                #
+                max_tok_id: int = int( torch.argmax(new_logits_at_cursor).item() )
+                #
+                if max_tok_id == self.model.config.tokenizer_eos_token:
+                    #
+                    break
+
+            #
+            ### Go to next token of the current chunk. ###
+            #
+            cursor_pos_in_current_chunk += 1
+
+        #
+        ### Concatenate all the previously predicted logits. ###
+        #
+        logits: Tensor = torch.cat(tensors=all_new_logits, dim=-2)
+
+        #
+        return logits
+
+
+    #
+    def next_token_prediction(
+        self,
+        text: str,
+        documents: Optional[dict[str, str]] = None,
+        max_length: int = 128,
+        stop_if_eos_token: bool = True,
+    ) -> Tensor:
+
+        #
+        logits: Tensor = self.next_token_prediction_logits(
+            text = text,
+            documents = documents,
+            max_length = max_length,
+            stop_if_eos_token = stop_if_eos_token,
+        )
+
+        #
+        ### For the moment, just use argmax to get the tokens idx from logits, but there should be ways to improve that (example: check for better tokens that follows each others). ###
+        #
+        token_ids: Tensor = torch.argmax(input=logits, dim=-2)
+        #
+        return self.tokenizer.decode(token_ids)  # type: ignore
 
 
     #
@@ -865,11 +1062,11 @@ class ChunkedDiffusionSystem:
         #
         ### Filter only the chunks where the permission is "chunk_inside_read_and_write" if decode_only_write ELSE filter "chunk_inside_read_only" AND"chunk_inside_read_and_write" ###
         #
-        what_to_decode: Tensor = (chunk.permission_mask_context_data[:, permission_item_chunk_inside_read_and_write] == 1)
+        what_to_decode: Tensor = (chunk.permission_mask_context_data[:, permission_item_chunk_inside_read_and_write] > 0.5 )
         #
         if not decode_only_write:
             #
-            what_to_decode |= (chunk.permission_mask_context_data[:, permission_item_chunk_inside_read_only] == 1)
+            what_to_decode |= (chunk.permission_mask_context_data[:, permission_item_chunk_inside_read_only] > 0.5 )
 
         #
         return self.tokenizer.decode(token_ids=chunk.chunk_context_data[what_to_decode])  # type: ignore
@@ -878,8 +1075,8 @@ class ChunkedDiffusionSystem:
     #
     def decode_all_main_chunks_into_text(
         self,
-        chunk_documents: list[str],
-        chunk_documents_idx: list[int],
+        chunks_documents: list[str],
+        chunks_documents_idx: list[int],
         chunks: list[Chunk],
         decode_only_write: bool = True
     ) -> str:
@@ -890,11 +1087,11 @@ class ChunkedDiffusionSystem:
         #
         ### Normally, the "main" document chunks are the last document's chunks. ###
         #
-        correct_document_idx: int = (len(chunk_documents) - 1)
+        correct_document_idx: int = (len(chunks_documents) - 1)
         #
         for i in range(len(chunks))[::-1]:
             #
-            if chunk_documents_idx[i] != correct_document_idx:
+            if chunks_documents_idx[i] != correct_document_idx:
                 #
                 break
             #
