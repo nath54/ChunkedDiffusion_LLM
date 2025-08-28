@@ -78,6 +78,9 @@ class Trainer:
         self.optimizer: Optimizer = AdamW(params=self.cdllm.parameters(), lr=self.learning_rate)
         #
         self.test_each_iterations: int = 200
+        #
+        self.batch_size_train: int = 16
+        self.batch_size_test: int = 32
 
         #
         ### Random projection Embedding matrixes. ###
@@ -99,6 +102,15 @@ class Trainer:
         ### Calculate the embedding with the CDLLM model. ###
         #
         return self.cdllm.simple_encode_text(text=text, encoding_length = embedding_context_length)
+
+
+    #
+    def forward_cdllm_embedding_batched(self, texts: list[str], embedding_context_length: int = 1) -> list[Tensor]:
+
+        #
+        ### Calculate the embedding with the CDLLM model. ###
+        #
+        return self.cdllm.batched_encode_text(texts=texts, encoding_length = embedding_context_length)
 
 
     #
@@ -214,6 +226,65 @@ class Trainer:
 
 
     #
+    def get_loss_on_embeddings_batched(self, dataset_idxs: list[int], from_dataset: str = "train") -> Optional[Tensor]:
+
+        #
+        texts: list[str] = []
+        truth_embeddings: list[Tensor] = []
+
+        #
+        for dataset_idx in dataset_idxs:
+
+            #
+            text: str
+            truth_embedding: Tensor
+            #
+            if from_dataset == "train":
+                #
+                if dataset_idx >= len(self.train_lst):
+                    #
+                    continue
+                #
+                text = self.train_lst[dataset_idx]
+                #
+                truth_embedding = torch.load(f".cache/train_tensors/train_{dataset_idx}.pt")
+            #
+            else:
+                #
+                if dataset_idx >= len(self.test_lst):
+                    #
+                    continue
+                #
+                text = self.test_lst[dataset_idx]
+                #
+                truth_embedding = torch.load(f".cache/test_tensors/test_{dataset_idx}.pt")
+            #
+            texts.append( text )
+            truth_embeddings.append( truth_embedding )
+
+        #
+        ### Forward cdllm embedding. ###
+        #
+        cdllm_embeddings: list[Tensor] = self.forward_cdllm_embedding_batched(texts=texts)
+
+        #
+        ### Calculate loss. ###
+        #
+        loss: Tensor = torch.tensor([0], device=self.cdllm.device, dtype=self.cdllm.dtype)
+        #
+        for truth_embedding, cdllm_embedding in zip(truth_embeddings, cdllm_embeddings):
+            #
+
+            loss += self.loss_fn(truth_embedding=truth_embedding, cdllm_embedding=cdllm_embedding)
+
+        #
+        del truth_embeddings
+
+        #
+        return loss
+
+
+    #
     def test(self) -> float:
 
         #
@@ -230,17 +301,41 @@ class Trainer:
         with torch.no_grad():  # Disable gradient computation for testing
             #
             len_test: int = len(self.test_lst)
+
             #
-            for i, _text in tqdm(enumerate(self.test_lst), desc=f"Testing on {len_test} test exemples..."):
+            ### Training loop. ###
+            #
+            pbar_test = tqdm(total=len_test, desc="Testing...")
+            #
+            for i in range(0, len_test, self.batch_size_test):
+
+                #
+                ### Zero gradients before computing new ones. ###
+                #
+                self.optimizer.zero_grad()
 
                 #
                 ### Calculate embeddings and get loss. ###
                 #
-                loss: Optional[Tensor] = self.get_loss_on_embeddings(dataset_idx=i, from_dataset="test")
+                loss: Optional[Tensor] = None
                 #
-                if not loss:
+                if self.batch_size_test <= 1:
                     #
+                    loss = self.get_loss_on_embeddings(dataset_idx=i, from_dataset="test")
+                #
+                else:
+                    #
+                    loss = self.get_loss_on_embeddings_batched(dataset_idxs=list(range(i, i+self.batch_size_test)), from_dataset="test")
+
+                #
+                pbar_test.update(n=self.batch_size_test)
+
+                #
+                if loss is None:
+                    #
+                    print(f"Warning: Skipping sample {i} due to invalid embeddings.")
                     continue
+
                 #
                 losses.append(loss.item())
 
@@ -259,7 +354,6 @@ class Trainer:
         return final_loss_value
 
 
-
     #
     def train(self) -> None:
 
@@ -272,9 +366,9 @@ class Trainer:
         #
         ### Training loop. ###
         #
-        pbar = tqdm(total=len(self.train_lst), desc="Training...")
+        pbar_train = tqdm(total=len(self.train_lst), desc="Training...")
         #
-        for i, _text in enumerate(self.train_lst):
+        for i in range(0, len(self.train_lst), self.batch_size_train):
 
             #
             ### Zero gradients before computing new ones. ###
@@ -284,9 +378,21 @@ class Trainer:
             #
             ### Calculate embeddings and get loss. ###
             #
-            loss: Optional[Tensor] = self.get_loss_on_embeddings(dataset_idx=i, from_dataset="train")
+            loss: Optional[Tensor] = None
             #
-            if not loss:
+            if self.batch_size_train <= 1:
+                #
+                loss = self.get_loss_on_embeddings(dataset_idx=i, from_dataset="train")
+            #
+            else:
+                #
+                loss = self.get_loss_on_embeddings_batched(dataset_idxs=list(range(i, i+self.batch_size_train)), from_dataset="train")
+
+            #
+            pbar_train.update(n=self.batch_size_train)
+
+            #
+            if loss is None:
                 #
                 print(f"Warning: Skipping sample {i} due to invalid embeddings.")
                 continue
@@ -305,9 +411,7 @@ class Trainer:
                 test_loss = self.test()
 
             #
-            pbar.update()
-            #
-            pbar.set_postfix_str(s=f"train loss = {loss.item()} | test loss = {test_loss}")
+            pbar_train.set_postfix_str(s=f"train loss = {loss.item()} | test loss = {test_loss}")
 
 
 #
