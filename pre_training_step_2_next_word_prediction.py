@@ -77,9 +77,9 @@ class Trainer:
         #
         self.optimizer: Optimizer = AdamW(params=self.cdllm.parameters(), lr=self.learning_rate)
         #
-        self.test_each_iterations: int = 64 * 3
+        self.test_each_iterations: int = 200
         #
-        self.batch_size_train: int = 32
+        self.batch_size_train: int = 16
         self.batch_size_test: int = 32
 
         #
@@ -276,9 +276,6 @@ class Trainer:
             #
 
             loss += self.loss_fn(truth_embedding=truth_embedding, cdllm_embedding=cdllm_embedding)
-
-        #
-        loss /= len(cdllm_embeddings)
 
         #
         del truth_embeddings

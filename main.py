@@ -37,12 +37,12 @@ def main():
     main_step1_pretraining()
 
     #
-    ### TODO: Pre-training step 2: SFT diffusion denoising learning from embedding space. ###
+    ### TODO: Pre-training step 2: SFT next word prediction / blank filling from token space. ###
     #
     pass
 
     #
-    ### TODO: Pre-training step 3: SFT next word prediction / blank filling from token space. ###
+    ### TODO: Pre-training step 3: SFT diffusion denoising learning from embedding space. ###
     #
     pass
 
