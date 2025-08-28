@@ -7,7 +7,6 @@ import json
 #
 import torch
 from torch import Tensor
-from torch import nn
 from torch.nn import functional as F
 from torch.optim import Optimizer, AdamW
 #
@@ -25,7 +24,7 @@ from lib_chunked_diffusion_model import ChunkedDiffusionSystem
 class Trainer:
 
     #
-    def __init__(self, encoder_model_path: str = 'Alibaba-NLP/gte-large-en-v1.5') -> None:
+    def __init__(self) -> None:
 
         #
         ### Load dataset to train on. ###
@@ -85,46 +84,38 @@ class Trainer:
         #
         ### Random projection Embedding matrixes. ###
         #
-        self.random_projection: nn.Linear = nn.Linear(
-            in_features=max(self.cdllm.model.config.from_model_config_hidden_size, self.encoder_hidden_size),
-            out_features=min(self.cdllm.model.config.from_model_config_hidden_size, self.encoder_hidden_size),
-            device=self.cdllm.device,
-            dtype=self.cdllm.dtype
-        )
+        pass
+
+    #
+    def forward_cdllm_logits(self, text: str, nb_tokens_length: int = 1) -> Tensor:
+
         #
-        self.mse_loss: nn.MSELoss = nn.MSELoss().to(device=self.cdllm.device)
+        ### TODO. ###
+        #
+        return Tensor()
 
 
     #
-    def forward_cdllm_embedding(self, text: str, embedding_context_length: int = 1) -> Tensor:
+    def forward_cdllm_logits_batched(self, texts: list[str], nb_tokens_length: int = 1) -> Tensor:
 
         #
-        ### Calculate the embedding with the CDLLM model. ###
+        ### TODO ###
         #
-        return self.cdllm.simple_encode_text(text=text, encoding_length = embedding_context_length)
-
-
-    #
-    def forward_cdllm_embedding_batched(self, texts: list[str], embedding_context_length: int = 1) -> list[Tensor]:
-
-        #
-        ### Calculate the embedding with the CDLLM model. ###
-        #
-        return self.cdllm.batched_encode_text(texts=texts, encoding_length = embedding_context_length)
+        return Tensor()
 
 
     #
     def loss_fn(
         self,
-        truth_embedding: Tensor,  # Dim: (1, d_E1)
-        cdllm_embedding: Tensor   # Dim: (k, d_E2)
+        truth_tokens: Tensor,  # Dim: (1, seq_length)
+        cdllm_logits: Tensor   # Dim: (1, seq_length, vocab_size)
     ) -> Tensor:
         """
-        Calculate the loss based on the distances between a single truth embedding and multiple CDLLM embeddings.
+        _description_
 
         Args:
-            truth_embedding (Tensor): The ground truth embedding tensor of shape (1, d_E).
-            cdllm_embedding (Tensor): The CDLLM embeddings tensor of shape (k, d_E), where k is the number of embeddings.
+            truth_tokens (Tensor): _description_
+            cdllm_logits (Tensor): _description_
 
         Returns:
             Tensor: The final loss tensor.
@@ -133,152 +124,81 @@ class Trainer:
         #
         ### Ensure correct device. ###
         #
-        cdllm_embedding = cdllm_embedding.to(device=self.cdllm.device)
-        truth_embedding = truth_embedding.to(device=self.cdllm.device)
+        truth_tokens = truth_tokens.to(device=self.cdllm.device)
+        cdllm_logits = cdllm_logits.to(device=self.cdllm.device)
 
         #
-        ### Case if the embeddings dimensions are not good. ###
-        #
-        if truth_embedding.shape[-1] != cdllm_embedding.shape[-1]:
-
-            #
-            if truth_embedding.shape[-1] < cdllm_embedding.shape[-1]:
-                #
-                cdllm_embedding = self.random_projection(cdllm_embedding).to(device=self.cdllm.device)
-            #
-            else:
-                #
-                truth_embedding = self.random_projection(truth_embedding).to(device=self.cdllm.device)
-
-        #
-        ### Case where the embeddings dimensions are good. ###
-        #
-
-        #
-        ### Repeat the truth embedding k times to match the shape of cdllm_embedding. ###
-        ### truth_embedding: (1, d_E) -> truth_repeated: (k, d_E) ###
-        #
-        truth_repeated: Tensor = torch.tile(truth_embedding, (cdllm_embedding.shape[0], 1))
-
-        #
-        ### Calculate the Mean Squared Error (MSE) loss for each row. ###
-        ### The reduction is set to 'none' to keep the loss for each sample separately. ###
-        ### The output 'all_distances' will have a shape of (k,). ###
-        #
-        all_distances: Tensor = F.mse_loss(truth_repeated, cdllm_embedding, reduction='none').mean(dim=1)
-
-        #
-        ### Calculate the minimum distance among all the rows. ###
-        ### This finds the closest CDLLM embedding to the truth embedding. ###
-        #
-        # min_distance: Tensor = torch.min(all_distances)
-
-        #
-        ### Calculate the mean distance of all the rows. ###
-        ### This provides a holistic view of the average distance across all CDLLM embeddings. ###
-        #
-        mean_distance: Tensor = torch.mean(all_distances)
-
-        #
-        ### The final loss is a combination of the mean and minimum distances. ###
-        ### This encourages both the average of all embeddings and the closest one to be accurate. ###
-        #
-        # final_loss: Tensor = mean_distance + min_distance
-
-        #
-        return mean_distance
-
-
-    #
-    def get_loss_on_embeddings(self, dataset_idx: int, from_dataset: str = "train") -> Optional[Tensor]:
-
-        #
-        text: str
-        truth_embedding: Tensor
-        #
-        if from_dataset == "train":
-            #
-            text = self.train_lst[dataset_idx]
-            #
-            truth_embedding = torch.load(f".cache/train_tensors/train_{dataset_idx}.pt")
-        #
-        else:
-            #
-            text = self.test_lst[dataset_idx]
-            #
-            truth_embedding = torch.load(f".cache/test_tensors/test_{dataset_idx}.pt")
-
-        #
-        ### Forward cdllm embedding. ###
-        #
-        cdllm_embedding: Tensor = self.forward_cdllm_embedding(text=text)
-
-        #
-        ### Calculate loss. ###
-        #
-        loss: Tensor = self.loss_fn(truth_embedding=truth_embedding, cdllm_embedding=cdllm_embedding)
-
-        #
-        del truth_embedding
+        loss: Tensor = F.cross_entropy(input=cdllm_logits, target=truth_tokens)
 
         #
         return loss
 
 
     #
-    def get_loss_on_embeddings_batched(self, dataset_idxs: list[int], from_dataset: str = "train") -> Optional[Tensor]:
+    def get_loss_on_text(self, dataset_idx: int, from_dataset: str = "train") -> Optional[Tensor]:
 
         #
-        texts: list[str] = []
-        truth_embeddings: list[Tensor] = []
+        text: str
+        #
+        if from_dataset == "train":
+            #
+            text = self.train_lst[dataset_idx]
+        #
+        else:
+            #
+            text = self.test_lst[dataset_idx]
 
         #
-        for dataset_idx in dataset_idxs:
-
-            #
-            text: str
-            truth_embedding: Tensor
-            #
-            if from_dataset == "train":
-                #
-                if dataset_idx >= len(self.train_lst):
-                    #
-                    continue
-                #
-                text = self.train_lst[dataset_idx]
-                #
-                truth_embedding = torch.load(f".cache/train_tensors/train_{dataset_idx}.pt")
-            #
-            else:
-                #
-                if dataset_idx >= len(self.test_lst):
-                    #
-                    continue
-                #
-                text = self.test_lst[dataset_idx]
-                #
-                truth_embedding = torch.load(f".cache/test_tensors/test_{dataset_idx}.pt")
-            #
-            texts.append( text )
-            truth_embeddings.append( truth_embedding )
+        truth_tokens: Tensor = Tensor()  # TODO
 
         #
         ### Forward cdllm embedding. ###
         #
-        cdllm_embeddings: list[Tensor] = self.forward_cdllm_embedding_batched(texts=texts)
+        cdllm_logits: Tensor = self.forward_cdllm_logits(text=text, nb_tokens_length=1)
+
+        #
+        ### Calculate loss. ###
+        #
+        loss: Tensor = self.loss_fn(truth_tokens=truth_tokens, cdllm_logits=cdllm_logits)
+
+        #
+        return loss
+
+
+    #
+    def get_loss_on_texts_batched(self, dataset_idxs: list[int], from_dataset: str = "train") -> Optional[Tensor]:
+
+        #
+        texts: list[str] = []
+        #
+        for dataset_idx in dataset_idxs:
+
+            #
+            if from_dataset == "train":
+                #
+                texts.append( self.train_lst[dataset_idx] )
+            #
+            else:
+                #
+                texts.append( self.test_lst[dataset_idx] )
+
+        #
+        truth_tokens_batchs: list[Tensor] = []
+
+        #
+        ### Forward cdllm embedding. ###
+        #
+        cdllm_logits_batched: Tensor = self.forward_cdllm_logits_batched(texts=texts, nb_tokens_length=1)
 
         #
         ### Calculate loss. ###
         #
         loss: Tensor = torch.tensor([0], device=self.cdllm.device, dtype=self.cdllm.dtype)
         #
-        for truth_embedding, cdllm_embedding in zip(truth_embeddings, cdllm_embeddings):
+        for truth_tokens, cdllm_logits in zip(truth_tokens_batchs, cdllm_logits_batched):
             #
 
-            loss += self.loss_fn(truth_embedding=truth_embedding, cdllm_embedding=cdllm_embedding)
-
-        #
-        del truth_embeddings
+            loss += self.loss_fn(truth_tokens=truth_tokens, cdllm_logits=cdllm_logits)
 
         #
         return loss
@@ -321,11 +241,11 @@ class Trainer:
                 #
                 if self.batch_size_test <= 1:
                     #
-                    loss = self.get_loss_on_embeddings(dataset_idx=i, from_dataset="test")
+                    loss = self.get_loss_on_text(dataset_idx=i, from_dataset="test")
                 #
                 else:
                     #
-                    loss = self.get_loss_on_embeddings_batched(dataset_idxs=list(range(i, i+self.batch_size_test)), from_dataset="test")
+                    loss = self.get_loss_on_texts_batched(dataset_idxs=list(range(i, i+self.batch_size_test)), from_dataset="test")
 
                 #
                 pbar_test.update(n=self.batch_size_test)
@@ -382,11 +302,11 @@ class Trainer:
             #
             if self.batch_size_train <= 1:
                 #
-                loss = self.get_loss_on_embeddings(dataset_idx=i, from_dataset="train")
+                loss = self.get_loss_on_text(dataset_idx=i, from_dataset="train")
             #
             else:
                 #
-                loss = self.get_loss_on_embeddings_batched(dataset_idxs=list(range(i, i+self.batch_size_train)), from_dataset="train")
+                loss = self.get_loss_on_texts_batched(dataset_idxs=list(range(i, i+self.batch_size_train)), from_dataset="train")
 
             #
             pbar_train.update(n=self.batch_size_train)
@@ -417,7 +337,7 @@ class Trainer:
 #
 ### Main function. ###
 #
-def main_step1_pretraining() -> None:
+def main_step2_pretraining() -> None:
 
     #
     ### Create the trainer. ###
