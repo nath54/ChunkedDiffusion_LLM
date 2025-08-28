@@ -354,13 +354,22 @@ class ChunkedDiffusionModel(nn.Module):
             #
             ### [0] because layer returns tuple (hidden, ...) ###
             #
-            hidden_state = layer(
+            res: Tensor | tuple[Tensor, ...] = layer(  # Should by of type Qwen2DecoderLayer
                 hidden_state,
                 attention_mask=attn_mask,
                 position_ids=position_ids,
                 position_embeddings=position_embeddings,
                 use_cache=use_cache
-            )[0]
+            )
+
+            #
+            if isinstance(res, tuple):
+                #
+                hidden_state = res[0]
+            #
+            else:
+                #
+                hidden_state = res
 
             #
             ### To fix bug that removes the batch dimension. ###
@@ -878,7 +887,9 @@ class ChunkedDiffusionSystem:
             if c.ndim == 1:
 
                 #
-                contexts[i] = c.unsqueeze(0)
+                c = c.unsqueeze(0)
+                #
+                contexts[i] = c
 
             #
             if c.shape[1] < largest_sequence_length:
@@ -891,7 +902,7 @@ class ChunkedDiffusionSystem:
                     device=self.device
                 )
                 #
-                full_c[c.shape[0]:, c.shape[1:]] = c
+                full_c[c.shape[0]:, c.shape[1]:] = c
                 #
                 contexts[i] = full_c
 
@@ -904,7 +915,9 @@ class ChunkedDiffusionSystem:
             if p.ndim == 2:
 
                 #
-                permissions[i] = p.unsqueeze(0)
+                p = p.unsqueeze(0)
+                #
+                permissions[i] = p
 
             #
             if p.shape[1] < largest_sequence_length:
@@ -1137,7 +1150,7 @@ class ChunkedDiffusionSystem:
 
 
     #
-    def batched_encode_text(self, texts: list[str], encoding_length: Optional[int] = None) -> Tensor:
+    def batched_encode_text(self, texts: list[str], encoding_length: Optional[int] = None) -> list[Tensor]:
 
         #
         chunks_batches: list[list[Chunk]] = []
@@ -1185,12 +1198,33 @@ class ChunkedDiffusionSystem:
             chunks_embeddings.append( batched_embedding )
 
         #
-        ### TODO: average the embeddings of each batchs correctly, be aware of not mixing batchs and multiple chunks of a SAME TEXT, e.g. batchs and chunks dimensions. ###
-        #
-        pass
+        embeddings_for_each_batch: list[ list[Tensor] ] = [ [] for _ in range(len(texts)) ]
 
         #
-        return Tensor()
+        i: int
+        j: int
+        chunks_embedding: Tensor
+        #
+        for i, chunks_embedding in enumerate( chunks_embeddings ):
+
+            #
+            batches_idxs_here: list[int] = [
+                batch_id for batch_id in range(len(texts)) if nb_chunks_per_batch_idx[batch_id] > i
+            ]
+
+            #
+            for j, batch_id in enumerate(batches_idxs_here):
+
+                #
+                embeddings_for_each_batch[ batch_id ].append(
+                    chunks_embedding[j]
+                )
+
+        #
+        return [
+            torch.mean( input=torch.stack(tensors=batch_embeddings), dim=0 )
+            for batch_embeddings in embeddings_for_each_batch
+        ]
 
 
     #
