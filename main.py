@@ -5,6 +5,7 @@ import os
 #
 from pre_training_step_1_encoding import main_step1_pretraining
 from pre_training_step_1a_preparing_encoding_dataset import main_step1a_preparing_dataset
+from pre_training_step_2_next_word_prediction import main_step2_pretraining
 
 
 #
@@ -37,9 +38,9 @@ def main():
     main_step1_pretraining()
 
     #
-    ### TODO: Pre-training step 2: SFT next word prediction / blank filling from token space. ###
+    ### Pre-training step 2: SFT next word prediction / blank filling from token space. ###
     #
-    pass
+    main_step2_pretraining()
 
     #
     ### TODO: Pre-training step 3: SFT diffusion denoising learning from embedding space. ###

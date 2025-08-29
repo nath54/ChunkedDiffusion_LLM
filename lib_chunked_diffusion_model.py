@@ -516,14 +516,14 @@ class ChunkedDiffusionSystem:
 
 
     #
-    def create_chunk_from_list_of_tokens(self, chunk_tok_ids: list[int], override_chunk_global_lenght: Optional[int] = None) -> Chunk:
+    def create_chunk_from_list_of_tokens(self, chunk_tok_ids: list[int], override_chunk_global_length: Optional[int] = None) -> Chunk:
 
         #
         return Chunk(
             permissions_items=self.model.config.permissions_mask_indexes,
             hidden_size=self.model.config.from_model_config_hidden_size,
             chunk_length = self.model.config.chunk_length,
-            chunk_global_context_length = override_chunk_global_lenght if override_chunk_global_lenght is not None else self.model.config.chunk_global_context_length,
+            chunk_global_context_length = override_chunk_global_length if override_chunk_global_length is not None else self.model.config.chunk_global_context_length,
             initial_data=torch.tensor(chunk_tok_ids, dtype=torch.int64, device=self.device) if chunk_tok_ids else None,
             initial_data_permissions_mask=None,
             padding_token=self.model.config.tokenizer_pad_token,
@@ -533,7 +533,7 @@ class ChunkedDiffusionSystem:
 
 
     #
-    def split_text_of_one_document_in_chunks(self, text: str, override_chunk_global_lenght: Optional[int] = None) -> tuple[ list[Chunk], list[int] ]:
+    def split_text_of_one_document_in_chunks(self, text: str, override_chunk_global_length: Optional[int] = None) -> tuple[ list[Chunk], list[int] ]:
 
         #
         text_chunks: list[Chunk] = []
@@ -586,7 +586,7 @@ class ChunkedDiffusionSystem:
                 while subline_nb_toks >= self.model.config.chunk_length:
                     #
                     text_chunks.append(
-                        self.create_chunk_from_list_of_tokens(chunk_tok_ids=subline_toks[:self.model.config.chunk_length], override_chunk_global_lenght=override_chunk_global_lenght)
+                        self.create_chunk_from_list_of_tokens(chunk_tok_ids=subline_toks[:self.model.config.chunk_length], override_chunk_global_length=override_chunk_global_length)
                     )
                     #
                     chunks_lengths.append( current_chunk_nb_tokens )
@@ -603,7 +603,7 @@ class ChunkedDiffusionSystem:
             else:
                 #
                 text_chunks.append(
-                    self.create_chunk_from_list_of_tokens(chunk_tok_ids=current_chunk_token_ids, override_chunk_global_lenght=override_chunk_global_lenght)
+                    self.create_chunk_from_list_of_tokens(chunk_tok_ids=current_chunk_token_ids, override_chunk_global_length=override_chunk_global_length)
                 )
                 #
                 chunks_lengths.append( current_chunk_nb_tokens )
@@ -617,7 +617,7 @@ class ChunkedDiffusionSystem:
         if current_chunk_token_ids:
             #
             text_chunks.append(
-                self.create_chunk_from_list_of_tokens(chunk_tok_ids=current_chunk_token_ids, override_chunk_global_lenght=override_chunk_global_lenght)
+                self.create_chunk_from_list_of_tokens(chunk_tok_ids=current_chunk_token_ids, override_chunk_global_length=override_chunk_global_length)
             )
             #
             chunks_lengths.append( current_chunk_nb_tokens )
@@ -1117,7 +1117,7 @@ class ChunkedDiffusionSystem:
         chunks: list[Chunk]
         _chunks_lengths: list[int]
         #
-        chunks, _chunks_lengths = self.split_text_of_one_document_in_chunks(text=text, override_chunk_global_lenght=encoding_length)
+        chunks, _chunks_lengths = self.split_text_of_one_document_in_chunks(text=text, override_chunk_global_length=encoding_length)
 
         #
         chunks_encoding: list[Tensor] = []
@@ -1168,7 +1168,7 @@ class ChunkedDiffusionSystem:
             #
             chunks: list[Chunk]
             #
-            chunks, _chunks_lengths = self.split_text_of_one_document_in_chunks(text=text, override_chunk_global_lenght=encoding_length)
+            chunks, _chunks_lengths = self.split_text_of_one_document_in_chunks(text=text, override_chunk_global_length=encoding_length)
 
             #
             for i in range(len(chunks)):
@@ -1327,7 +1327,7 @@ class ChunkedDiffusionSystem:
                 #
                 ### Get the current chunk context pos idx. ###
                 #
-                current_chunk_context_start_pos_idx = int( sum( [ctx_tens.shape[-2] for ctx_tens in contexts_tensors] ) )
+                current_chunk_context_start_pos_idx = int( sum( [ctx_tens.shape[-1] for ctx_tens in contexts_tensors] ) )
 
                 #
                 ### Chunk Context with chunk separation at the end. ###
@@ -1393,10 +1393,15 @@ class ChunkedDiffusionSystem:
         chunks: list[Chunk],
         chunks_lengths: list[int],
         current_chunk_idx: int,
-        cursor_pos_in_current_chunk: int,
-        chunks_modified_hidden_states: dict[int, dict[int, Tensor]],
+        cursor_pos_in_current_chunk: list[int],
+        chunks_modified_hidden_states: Optional[dict[int, dict[int, Tensor]]],
         use_cache: bool = False,
-    ) -> tuple[ Tensor, dict[int, dict[int, Tensor]] ]:  # (new_logits_at_cursor, chunks_modified_hidden_states)
+    ) -> tuple[ list[Tensor], dict[int, dict[int, Tensor]] ]:  # (new_logits_at_cursor, chunks_modified_hidden_states)
+
+        #
+        if chunks_modified_hidden_states is None:
+            #
+            chunks_modified_hidden_states = {}
 
         #
         ### Prepare the global context from the chunks ###
@@ -1417,18 +1422,27 @@ class ChunkedDiffusionSystem:
         #
         ### Calculate the current token precice idx in the context. ###
         #
-        cursor_pos: int = current_chunk_context_start_pos_idx + cursor_pos_in_current_chunk
+        cursor_pos: list[int]
+        #
+        cursor_pos = [
+            current_chunk_context_start_pos_idx + c
+            for c in cursor_pos_in_current_chunk
+        ]
 
         #
         ### Update the permissions mask to indicate we want to predict a certain token. ###
         #
         if permissions_mask.ndim == 2:
             #
-            permissions_mask[cursor_pos, :] = self.permissions_vectors["next_token_prediction_cursor"]
+            for c in cursor_pos:
+                #
+                permissions_mask[c, :] = self.permissions_vectors["next_token_prediction_cursor"]
         #
         elif permissions_mask.ndim == 3:
             #
-            permissions_mask[0, cursor_pos, :] = self.permissions_vectors["next_token_prediction_cursor"]
+            for c in cursor_pos:
+                #
+                permissions_mask[0, c, :] = self.permissions_vectors["next_token_prediction_cursor"]
 
         #
         ### Forward the model to get logits and hidden_state outputs. ###
@@ -1443,7 +1457,23 @@ class ChunkedDiffusionSystem:
         #
         ### Get the new logits to return. ###
         #
-        new_logits_at_cursor: Tensor = logits[cursor_pos]
+        new_logits_at_cursor: Tensor | list[Tensor]
+        #
+        if logits.ndim == 2:
+            #
+            new_logits_at_cursor = []
+            #
+            for c in cursor_pos:
+                #
+                new_logits_at_cursor.append( logits[c] )
+        #
+        else:
+            #
+            new_logits_at_cursor = []
+            #
+            for c in cursor_pos:
+                #
+                new_logits_at_cursor.append( logits[0, c] )
 
         #
         ### Update the chunks modified hidden_states. ###
@@ -1451,8 +1481,19 @@ class ChunkedDiffusionSystem:
         if current_chunk_idx not in chunks_modified_hidden_states:
             #
             chunks_modified_hidden_states[current_chunk_idx] = {}
+
         #
-        chunks_modified_hidden_states[current_chunk_idx][cursor_pos] = hidden_state[cursor_pos]
+        if hidden_state.ndim == 2:
+            #
+            for c in cursor_pos:
+                #
+                chunks_modified_hidden_states[current_chunk_idx][c] = hidden_state[c]
+        #
+        else:
+            #
+            for c in cursor_pos:
+                #
+                chunks_modified_hidden_states[current_chunk_idx][c] = hidden_state[0, c]
 
         #
         ### Return results and updated variables. ###
@@ -1461,13 +1502,94 @@ class ChunkedDiffusionSystem:
 
 
     #
-    def next_token_prediction_logits(
+    def next_token_prediction_logits_from_chunks_directly(
+        self,
+        chunks_documents: list[str],
+        chunks_documents_idx: list[int],
+        chunks: list[Chunk],
+        chunks_lengths: list[int],
+        positions_to_generate_on_each_chunks: dict[int, list[int]],
+        stop_if_eos_token: bool = True,
+        generate_n_toks_per_n_toks: int = 1,
+        chunks_modified_hidden_states: Optional[dict[int, dict[int, Tensor]]] = None
+    ) -> dict[int, list[Tensor]]:
+
+        #
+        all_new_logits_per_chunks: dict[int, list[Tensor]] = {}
+
+        #
+        if chunks_modified_hidden_states is None:
+            #
+            chunks_modified_hidden_states = {}
+
+        #
+        current_chunk_idx: int
+        where_to_generate_inside_chunk: list[int]
+        #
+        for current_chunk_idx, where_to_generate_inside_chunk in positions_to_generate_on_each_chunks.items():
+
+            #
+            all_new_logits_per_chunks[current_chunk_idx] = []
+
+            #
+            for i in range(0, len(where_to_generate_inside_chunk), generate_n_toks_per_n_toks):
+
+                #
+                cursor_pos: list[int] = where_to_generate_inside_chunk[ i : (i+generate_n_toks_per_n_toks) ]
+
+                #
+                ### Predict next logits. ###
+                #
+                new_logits_at_cursor: list[Tensor]
+                #
+                new_logits_at_cursor, chunks_modified_hidden_states = self.next_token_prediction_chunks(
+                    chunks_documents = chunks_documents,
+                    chunks_documents_idx = chunks_documents_idx,
+                    chunks = chunks,
+                    chunks_lengths = chunks_lengths,
+                    current_chunk_idx = current_chunk_idx,
+                    chunks_modified_hidden_states=chunks_modified_hidden_states,
+                    cursor_pos_in_current_chunk = cursor_pos,
+                )
+                #
+                all_new_logits_per_chunks[current_chunk_idx] += new_logits_at_cursor
+
+                #
+                ### Verify if eos token generated. ###
+                #
+                if stop_if_eos_token:
+                    #
+                    for new_logit in new_logits_at_cursor:
+                        #
+                        max_tok_id: int = int( torch.argmax(new_logit).item() )
+                        #
+                        if max_tok_id == self.model.config.tokenizer_eos_token:
+                            #
+                            return all_new_logits_per_chunks
+
+            #
+            ### Update the global encoding of the previous chunk and create a new chunk. ###
+            #
+            chunks[current_chunk_idx].chunk_global_context_data = self.encode_one_chunk(chunks[current_chunk_idx])  # type: ignore
+            #
+            chunks_documents_idx.append( len(chunks_documents) - 1 )
+            chunks.append( self.create_chunk_from_list_of_tokens(chunk_tok_ids = []) )  # type: ignore
+            chunks_lengths.append( 0 )  # type: ignore
+
+
+        #
+        return all_new_logits_per_chunks
+
+
+    #
+    def prepare_chunks_for_next_tokens_predictions(
         self,
         text: str,
         documents: Optional[dict[str, str]] = None,
         max_length: int = 128,
         stop_if_eos_token: bool = True,
-    ) -> Tensor:
+        generate_n_toks_per_n_toks: int = 1
+    ) -> tuple[list[str], list[int], list[Chunk], list[int]]:
 
         #
         ### Split text into chunks. ###
@@ -1483,74 +1605,78 @@ class ChunkedDiffusionSystem:
         )
         #
         chunks = self.init_all_chunks_global_context_with_chunk_encoding(chunks=chunks)
-        #
-        chunks_modified_hidden_states: dict[int, dict[int, Tensor]] = {}
 
         #
-        all_new_logits: list[Tensor] = []
+        return chunks_documents, chunks_documents_idx, chunks, chunks_lengths
+
+
+    #
+    def next_token_prediction_logits(
+        self,
+        text: str,
+        documents: Optional[dict[str, str]] = None,
+        max_length: int = 128,
+        stop_if_eos_token: bool = True,
+        generate_n_toks_per_n_toks: int = 1
+    ) -> dict[int, list[Tensor]]:
+
         #
-        nb_generated_tokens: int = 0
+        ### Split text into chunks. ###
+        #
+        chunks_documents: list[str]
+        chunks_documents_idx: list[int]
+        chunks: list[Chunk]
+        chunks_lengths: list[int]
+        #
+        chunks_documents, chunks_documents_idx, chunks, chunks_lengths = self.prepare_chunks_for_next_tokens_predictions(
+            text = text,
+            documents = documents,
+            max_length = max_length,
+            stop_if_eos_token = stop_if_eos_token,
+            generate_n_toks_per_n_toks = generate_n_toks_per_n_toks,
+        )
+        #
+        chunks_modified_hidden_states: dict[int, dict[int, Tensor]] = {}
 
         #
         ### Because we do next token prediction
         #
         current_chunk_idx: int = len(chunks) - 1
         cursor_pos_in_current_chunk: int = chunks_lengths[current_chunk_idx]
+
         #
-        while nb_generated_tokens < max_length:
-
+        positions_to_generate_on_each_chunks: dict[int, list[int]] = {current_chunk_idx: []}
+        #
+        for _i in range(max_length):
             #
-            if cursor_pos_in_current_chunk >= self.model.config.chunk_length:
-
-                #
-                ### Update the global encoding of the previous chunk and create a new chunk. ###
-                #
-                chunks[current_chunk_idx].chunk_global_context_data = self.encode_one_chunk(chunks[current_chunk_idx])  # type: ignore
-                #
-                chunks_documents_idx.append( len(chunks_documents) - 1 )
-                chunks.append( self.create_chunk_from_list_of_tokens(chunk_tok_ids = []) )  # type: ignore
-                chunks_lengths.append( 0 )  # type: ignore
+            if cursor_pos_in_current_chunk >= chunks[current_chunk_idx].chunk_length:
                 #
                 current_chunk_idx += 1
                 cursor_pos_in_current_chunk = 0
-
-            #
-            ### Predict next logits. ###
-            #
-            new_logits_at_cursor: Tensor
-            #
-            new_logits_at_cursor, chunks_modified_hidden_states = self.next_token_prediction_chunks(
-                chunks_documents = chunks_documents,
-                chunks_documents_idx = chunks_documents_idx,
-                chunks = chunks,
-                chunks_lengths = chunks_lengths,
-                current_chunk_idx = current_chunk_idx,
-                chunks_modified_hidden_states=chunks_modified_hidden_states,
-                cursor_pos_in_current_chunk = cursor_pos_in_current_chunk,
-            )
-            #
-            all_new_logits.append( new_logits_at_cursor )
-            #
-            if stop_if_eos_token:
                 #
-                max_tok_id: int = int( torch.argmax(new_logits_at_cursor).item() )
+                positions_to_generate_on_each_chunks[current_chunk_idx] = []
                 #
-                if max_tok_id == self.model.config.tokenizer_eos_token:
-                    #
-                    break
-
+                chunks_documents_idx.append( len(chunks_documents) )
+                chunks.append(
+                    self.create_chunk_from_list_of_tokens(chunk_tok_ids=[])
+                )
+                chunks_lengths.append( 0 )
             #
-            ### Go to next token of the current chunk. ###
+            positions_to_generate_on_each_chunks[current_chunk_idx].append( cursor_pos_in_current_chunk )
             #
             cursor_pos_in_current_chunk += 1
 
         #
-        ### Concatenate all the previously predicted logits. ###
-        #
-        logits: Tensor = torch.cat(tensors=all_new_logits, dim=-2)
-
-        #
-        return logits
+        return self.next_token_prediction_logits_from_chunks_directly(
+            chunks_documents=chunks_documents,
+            chunks_documents_idx=chunks_documents_idx,
+            chunks=chunks,
+            chunks_lengths=chunks_lengths,
+            positions_to_generate_on_each_chunks=positions_to_generate_on_each_chunks,
+            stop_if_eos_token=stop_if_eos_token,
+            generate_n_toks_per_n_toks=generate_n_toks_per_n_toks,
+            chunks_modified_hidden_states=chunks_modified_hidden_states
+        )
 
 
     #
@@ -1560,22 +1686,36 @@ class ChunkedDiffusionSystem:
         documents: Optional[dict[str, str]] = None,
         max_length: int = 128,
         stop_if_eos_token: bool = True,
-    ) -> Tensor:
+        generate_n_toks_per_n_toks: int = 16
+    ) -> str:
 
         #
-        logits: Tensor = self.next_token_prediction_logits(
+        logits: dict[int, list[Tensor]] = self.next_token_prediction_logits(
             text = text,
             documents = documents,
             max_length = max_length,
             stop_if_eos_token = stop_if_eos_token,
+            generate_n_toks_per_n_toks=generate_n_toks_per_n_toks
         )
 
         #
-        ### For the moment, just use argmax to get the tokens idx from logits, but there should be ways to improve that (example: check for better tokens that follows each others). ###
+        generated_text: list[str] = []
+
         #
-        token_ids: Tensor = torch.argmax(input=logits, dim=-2)
+        for _chunk_idx, generated_logits in logits.items():
+
+            #
+            for logit in generated_logits:
+
+                #
+                ### For the moment, just use argmax to get the tokens idx from logits, but there should be ways to improve that (example: check for better tokens that follows each others). ###
+                #
+                token_ids: Tensor = torch.argmax(input=logit, dim=-2)
+                #
+                generated_text.append( self.tokenizer.decode(token_ids) )  # type: ignore
+
         #
-        return self.tokenizer.decode(token_ids)  # type: ignore
+        return "".join(generated_text)
 
 
     #

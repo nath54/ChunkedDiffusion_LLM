@@ -16,6 +16,7 @@ from tqdm import tqdm  # type: ignore
 #
 from lib_chunked_diffusion_model_config import ChunkedDiffusionModelConfig
 from lib_chunked_diffusion_model import ChunkedDiffusionSystem
+from lib_chunks import Chunk
 
 
 #
@@ -38,18 +39,16 @@ class Trainer:
         #
         ### Loading test dataset. ###
         #
-        with open(".cache/encoding_texts_dataset.json") as f:
+        with open(".cache/filtered_dataset_cache.json") as f:
             #
             cache: dict[str, Any] = json.load(fp=f)
             #
-            self.train_lst = cache["train_texts"]
-            self.test_lst = cache["test_texts"]
+            self.train_lst = cache["train"]
+            self.test_lst = cache["test"]
+
         #
-        tmp: Tensor = torch.load(".cache/train_tensors/train_1.pt")
-        #
-        self.encoder_hidden_size: int = tmp.shape[-1]
-        #
-        del tmp
+        self.train_lst = self.train_lst[:1000]
+        self.test_lst = self.test_lst[:100]
 
         #
         ### Init the chunked diffusion LLM model. ###
@@ -61,7 +60,7 @@ class Trainer:
                     "hidden_size": 1024,
                     "intermediate_size": 4096,
                     "num_hidden_layers": 4,
-                    "vocab_size": 128,
+                    "vocab_size": 151936,
                     "_attn_implementation": "eager",
                 }
             )
@@ -78,30 +77,83 @@ class Trainer:
         #
         self.test_each_iterations: int = 200
         #
-        self.batch_size_train: int = 16
-        self.batch_size_test: int = 32
-
-        #
-        ### Random projection Embedding matrixes. ###
-        #
-        pass
-
-    #
-    def forward_cdllm_logits(self, text: str, nb_tokens_length: int = 1) -> Tensor:
-
-        #
-        ### TODO. ###
-        #
-        return Tensor()
+        self.batch_size_train: int = 1
+        self.batch_size_test: int = 1
 
 
     #
-    def forward_cdllm_logits_batched(self, texts: list[str], nb_tokens_length: int = 1) -> Tensor:
+    def forward_cdllm_logits(
+        self,
+        text: str,
+        documents: Optional[dict[str, str]] = None,
+        max_length: int = 512,
+        stop_if_eos_token: bool = True,
+        generate_n_toks_per_n_toks: int = 16
+    ) -> tuple[ list[Chunk], dict[int, list[Tensor]] ]:
 
         #
-        ### TODO ###
+        ### Split text into chunks. ###
         #
-        return Tensor()
+        chunks_documents: list[str]
+        chunks_documents_idx: list[int]
+        chunks: list[Chunk]
+        chunks_lengths: list[int]
+        #
+        chunks_documents, chunks_documents_idx, chunks, chunks_lengths = self.cdllm.prepare_chunks_for_next_tokens_predictions(
+            text = text,
+            documents = documents,
+            max_length = max_length,
+            stop_if_eos_token = stop_if_eos_token,
+            generate_n_toks_per_n_toks = generate_n_toks_per_n_toks,
+        )
+        #
+        chunks_modified_hidden_states: dict[int, dict[int, Tensor]] = {}
+
+        #
+        ### Because we do next token prediction
+        #
+        positions_to_generate_on_each_chunks: dict[int, list[int]] = {}
+        #
+        for chunk_idx, _chunk in enumerate(chunks):
+            #
+            if chunk_idx != 0:
+                #
+                positions_to_generate_on_each_chunks[chunk_idx] = list(range(0, chunks_lengths[chunk_idx]))
+            #
+            else:
+                #
+                positions_to_generate_on_each_chunks[chunk_idx] = list(range(1, chunks_lengths[chunk_idx]))
+
+        #
+        generated_logits: dict[int, list[Tensor]] = self.cdllm.next_token_prediction_logits_from_chunks_directly(
+            chunks_documents=chunks_documents,
+            chunks_documents_idx=chunks_documents_idx,
+            chunks=chunks,
+            chunks_lengths=chunks_lengths,
+            positions_to_generate_on_each_chunks=positions_to_generate_on_each_chunks,
+            stop_if_eos_token=stop_if_eos_token,
+            generate_n_toks_per_n_toks=generate_n_toks_per_n_toks,
+            chunks_modified_hidden_states=chunks_modified_hidden_states
+        )
+
+        #
+        return chunks, generated_logits
+
+
+    #
+    def forward_cdllm_logits_batched(self, texts: list[str]) -> list[ tuple[ list[Chunk], dict[int, list[Tensor]] ] ]:
+
+        #
+        ### Fake batched for now. ###
+        #
+        batched_outputs: list[ tuple[ list[Chunk], dict[int, list[Tensor]] ] ] = []
+        #
+        for text in texts:
+            #
+            batched_outputs.append( self.forward_cdllm_logits(text=text) )
+
+        #
+        return batched_outputs
 
 
     #
@@ -149,17 +201,46 @@ class Trainer:
             text = self.test_lst[dataset_idx]
 
         #
-        truth_tokens: Tensor = Tensor()  # TODO
-
-        #
         ### Forward cdllm embedding. ###
         #
-        cdllm_logits: Tensor = self.forward_cdllm_logits(text=text, nb_tokens_length=1)
+        chunks_out: list[Chunk]
+        cdllm_logits: dict[int, list[Tensor]]
+        #
+        chunks_out, cdllm_logits = self.forward_cdllm_logits(text=text)
 
         #
         ### Calculate loss. ###
         #
-        loss: Tensor = self.loss_fn(truth_tokens=truth_tokens, cdllm_logits=cdllm_logits)
+        loss: Tensor = torch.tensor([0], device=self.cdllm.device, dtype=self.cdllm.dtype)
+
+        #
+        id_chunk: int
+        logits: list[Tensor]
+        #
+        for id_chunk, logits in cdllm_logits.items():
+
+            #
+            chunk: Chunk = chunks_out[id_chunk]
+
+            #
+            idx_first_tensor: int = 0
+            #
+            if id_chunk == 0:
+
+                #
+                idx_first_tensor = 1
+
+            #
+            for idx_tensor, logit_tensor in enumerate( logits ):
+
+                #
+                loss_item: Tensor = self.loss_fn(
+                    truth_tokens=chunk.chunk_context_data[idx_first_tensor + idx_tensor],
+                    cdllm_logits=logit_tensor
+                )
+
+                #
+                loss += loss_item
 
         #
         return loss
@@ -169,36 +250,19 @@ class Trainer:
     def get_loss_on_texts_batched(self, dataset_idxs: list[int], from_dataset: str = "train") -> Optional[Tensor]:
 
         #
-        texts: list[str] = []
+        ### Calculate loss for each item in the batch. ###
+        #
+        loss: Tensor = torch.tensor([0], device=self.cdllm.device, dtype=self.cdllm.dtype)
         #
         for dataset_idx in dataset_idxs:
 
             #
-            if from_dataset == "train":
-                #
-                texts.append( self.train_lst[dataset_idx] )
+            loss_item: Optional[Tensor] = self.get_loss_on_text(dataset_idx=dataset_idx, from_dataset=from_dataset)
+
             #
-            else:
+            if loss_item is not None:
                 #
-                texts.append( self.test_lst[dataset_idx] )
-
-        #
-        truth_tokens_batchs: list[Tensor] = []
-
-        #
-        ### Forward cdllm embedding. ###
-        #
-        cdllm_logits_batched: Tensor = self.forward_cdllm_logits_batched(texts=texts, nb_tokens_length=1)
-
-        #
-        ### Calculate loss. ###
-        #
-        loss: Tensor = torch.tensor([0], device=self.cdllm.device, dtype=self.cdllm.dtype)
-        #
-        for truth_tokens, cdllm_logits in zip(truth_tokens_batchs, cdllm_logits_batched):
-            #
-
-            loss += self.loss_fn(truth_tokens=truth_tokens, cdllm_logits=cdllm_logits)
+                loss += loss_item
 
         #
         return loss
