@@ -15,6 +15,7 @@ from lib_load_from_hugging_face import load_model, load_tokenizer
 from lib_chunked_diffusion_model_config import ChunkedDiffusionModelConfig
 from lib_chunks import Chunk, create_permission_vector
 from lib_get_device import get_best_device
+from lib_dtypes import DTYPE_FLOAT, DTYPE_INT
 
 
 #
@@ -73,7 +74,7 @@ class SharedEmbeddingAndLMHead(nn.Module):
             embedding_dim=self.weight.size(1),
             _weight=self.weight,
             device=self.device,
-            dtype=self.dtype
+            dtype=DTYPE_FLOAT
         )
         #
         return embedding_layer
@@ -88,7 +89,7 @@ class SharedEmbeddingAndLMHead(nn.Module):
             out_features=self.weight.size(0),
             bias=False,
             device=self.device,
-            dtype=self.dtype
+            dtype=DTYPE_FLOAT
         )
         #
         lm_head.weight = self.weight  # This is the key line for sharing the weights!
@@ -105,7 +106,7 @@ class ChunkedDiffusionModel(nn.Module):
     def __init__(
         self,
         config: ChunkedDiffusionModelConfig,
-        dtype: torch.dtype = torch.float32,
+        dtype: torch.dtype = DTYPE_FLOAT,
         device: str | torch.device = get_best_device(),
     ) -> None:
 
@@ -122,7 +123,15 @@ class ChunkedDiffusionModel(nn.Module):
         #
         if self.config.from_model_custom_config is None:
             #
-            self.model = load_model(model_name=self.config.from_model_name).to(device=self.device, dtype=self.dtype)  # type: ignore
+            self.model = load_model(model_name=self.config.from_model_name, use_qlora=self.config.from_qlora_model)
+            #
+            if not self.config.from_qlora_model:
+                #
+                self.model = self.model.to(device=self.device, dtype=DTYPE_FLOAT)  # type: ignore
+            #
+            else:
+                #
+                self.model = self.model.to(device=self.device)  # type: ignore
         #
         self.model_embedding_layer: Optional[nn.Module] = None  # Will be initialized with prepare_model()
         self.model_transformer_layers: Optional[nn.ModuleList] = None  # Will be initialized with prepare_model()
@@ -132,7 +141,9 @@ class ChunkedDiffusionModel(nn.Module):
         #
         self.projector_intern: nn.Linear = nn.Linear(
             in_features = self.config.from_model_config_hidden_size,
-            out_features = (self.config.from_model_config_hidden_size - self.config.permissions_mask_nb_items)
+            out_features = (self.config.from_model_config_hidden_size - self.config.permissions_mask_nb_items),
+            dtype=DTYPE_FLOAT,
+            device=self.device
         )
 
         #
@@ -183,20 +194,52 @@ class ChunkedDiffusionModel(nn.Module):
             ### Handle models with a common architecture (e.g., Llama, Qwen, Mistral) ###
             ### These models typically have a `model` attribute containing `embed_tokens` and `layers`. ###
             #
-            if "qwen" in model_family or "llama" in model_family or "mistral" in model_family:
+            if "smol" in model_family or "qwen" in model_family or "llama" in model_family or "mistral" in model_family:
                 #
-                self.model_embedding_layer = self.model.model.embed_tokens  # type: ignore
-                self.model_transformer_layers = self.model.model.layers  # type: ignore
-                self.model_lm_head = self.model.lm_head  # type: ignore
+                if not self.config.from_qlora_model:
+                    #
+                    self.model_embedding_layer = self.model.model.embed_tokens  # type: ignore
+                    self.model_transformer_layers = self.model.model.layers  # type: ignore
+                    self.model_lm_head = self.model.lm_head  # type: ignore
+                #
+                else:
+                    #
+                    try:
+                        #
+                        self.model_embedding_layer = self.model.model.embed_tokens  # type: ignore
+                        self.model_transformer_layers = self.model.model.layers  # type: ignore
+                        self.model_lm_head = self.model.lm_head  # type: ignore
+                    #
+                    except:
+                        #
+                        print(f"DEBUG | \n{self.model}")
+                        #
+                        exit()
 
             #
             ### GPT-2 model family. ###
             #
             elif "gpt2" in model_family:
                 #
-                self.model_embedding_layer = self.model.transformer.wte  # type: ignore
-                self.model_transformer_layers = self.model.transformer.h  # type: ignore
-                self.model_lm_head = self.model.lm_head  # type: ignore
+                if not self.config.from_qlora_model:
+                    #
+                    self.model_embedding_layer = self.model.transformer.wte  # type: ignore
+                    self.model_transformer_layers = self.model.transformer.h  # type: ignore
+                    self.model_lm_head = self.model.lm_head  # type: ignore
+                #
+                else:
+                    #
+                    try:
+                        #
+                        self.model_embedding_layer = self.model.transformer.wte  # type: ignore
+                        self.model_transformer_layers = self.model.transformer.h  # type: ignore
+                        self.model_lm_head = self.model.lm_head  # type: ignore
+                    #
+                    except:
+                        #
+                        print(f"DEBUG | \n{self.model}")
+                        #
+                        exit()
 
             #
             ### Raise an error if the model family is not supported yet. ###
@@ -220,7 +263,7 @@ class ChunkedDiffusionModel(nn.Module):
                     num_embeddings=self.config.from_model_config.vocab_size,
                     embedding_dim=self.config.from_model_config.hidden_size,
                     device=self.device,
-                    dtype=self.dtype,
+                    dtype=DTYPE_FLOAT,
                 )
                 #
                 self.model_embedding_layer = shared_embedding_and_head_module.get_embedding_layer()
@@ -232,13 +275,13 @@ class ChunkedDiffusionModel(nn.Module):
                     num_embeddings=self.config.from_model_config.vocab_size,
                     embedding_dim=self.config.from_model_config.hidden_size,
                     device=self.device,
-                    dtype=self.dtype,
+                    dtype=DTYPE_FLOAT,
                 )
                 #
                 self.model_lm_head = nn.Linear(
                     in_features=self.config.from_model_config.hidden_size,
                     out_features=self.config.from_model_config.vocab_size,
-                    dtype=self.dtype,
+                    dtype=DTYPE_FLOAT,
                     device=self.device
                 )
 
@@ -249,7 +292,7 @@ class ChunkedDiffusionModel(nn.Module):
                     for i in range(self.config.from_model_config.num_hidden_layers)
                 ]
             ).to(
-                dtype=self.dtype,
+                dtype=DTYPE_FLOAT,
                 device=self.device
             )
 
@@ -424,7 +467,7 @@ class ChunkedDiffusionModel(nn.Module):
         #
         seq_len: int= hidden_state.shape[1]
         #
-        position_ids: Tensor = torch.arange(seq_len, dtype=torch.long, device=self.device).unsqueeze(0).expand(hidden_state.shape[0], seq_len)
+        position_ids: Tensor = torch.arange(seq_len, dtype=DTYPE_INT, device=self.device).unsqueeze(0).expand(hidden_state.shape[0], seq_len)
         #
         position_embeddings: tuple[Tensor, Tensor] = self.model_rotary_embedding(x=hidden_state, position_ids=position_ids)
 
@@ -451,7 +494,7 @@ class ChunkedDiffusionSystem:
         self,
         model_config: ChunkedDiffusionModelConfig,
         mode: str = "simple",
-        dtype: torch.dtype = torch.float32,
+        dtype: torch.dtype = DTYPE_FLOAT,
         device: str | torch.device = get_best_device()
     ) -> None:
 
@@ -493,7 +536,7 @@ class ChunkedDiffusionSystem:
             permission_name: create_permission_vector(
                 nb_permissions_items=self.model.config.permissions_mask_nb_items,
                 permission_item = item_idx,
-                dtype=self.dtype,
+                dtype=DTYPE_FLOAT,
                 device=self.device
             )
 
@@ -501,10 +544,10 @@ class ChunkedDiffusionSystem:
         }
         #
         self.toks: dict[str, Tensor] = {
-            "pad": torch.tensor(data=[self.model.config.tokenizer_documents_separation_token], dtype=torch.int64, device=self.device),
-            "chunk_sep": torch.tensor(data=[self.model.config.tokenizer_documents_separation_token], dtype=torch.int64, device=self.device),
-            "doc_sep": torch.tensor(data=[self.model.config.tokenizer_documents_separation_token], dtype=torch.int64, device=self.device),
-            "doc_title_content_sep": torch.tensor(data=[self.model.config.tokenizer_documents_separation_token], dtype=torch.int64, device=self.device),
+            "pad": torch.tensor(data=[self.model.config.tokenizer_documents_separation_token], dtype=DTYPE_INT, device=self.device),
+            "chunk_sep": torch.tensor(data=[self.model.config.tokenizer_documents_separation_token], dtype=DTYPE_INT, device=self.device),
+            "doc_sep": torch.tensor(data=[self.model.config.tokenizer_documents_separation_token], dtype=DTYPE_INT, device=self.device),
+            "doc_title_content_sep": torch.tensor(data=[self.model.config.tokenizer_documents_separation_token], dtype=DTYPE_INT, device=self.device),
         }
 
 
@@ -524,10 +567,10 @@ class ChunkedDiffusionSystem:
             hidden_size=self.model.config.from_model_config_hidden_size,
             chunk_length = self.model.config.chunk_length,
             chunk_global_context_length = override_chunk_global_length if override_chunk_global_length is not None else self.model.config.chunk_global_context_length,
-            initial_data=torch.tensor(chunk_tok_ids, dtype=torch.int64, device=self.device) if chunk_tok_ids else None,
+            initial_data=torch.tensor(chunk_tok_ids, dtype=DTYPE_INT, device=self.device) if chunk_tok_ids else None,
             initial_data_permissions_mask=None,
             padding_token=self.model.config.tokenizer_pad_token,
-            dtype=self.dtype,
+            dtype=DTYPE_FLOAT,
             device=self.device
         )
 
@@ -788,7 +831,7 @@ class ChunkedDiffusionSystem:
                     chunk.chunk_context_data,
                     torch.zeros(
                         size=(chunk.chunk_global_context_data.shape[-2],),
-                        dtype=chunk.chunk_context_data.dtype,
+                        dtype=DTYPE_INT,
                         device=chunk.chunk_context_data.device
                     )
                 ], dim = -1 )
@@ -807,7 +850,7 @@ class ChunkedDiffusionSystem:
                     chunk.chunk_context_data,
                     torch.zeros(
                         size=(chunk.chunk_context_data.shape[0], chunk.chunk_global_context_data.shape[-2]),
-                        dtype=chunk.chunk_context_data.dtype,
+                        dtype=DTYPE_INT,
                         device=chunk.chunk_context_data.device
                     )
                 ], dim = -1 )
@@ -853,7 +896,7 @@ class ChunkedDiffusionSystem:
         #
         title_toks: list[int] = self.tokenizer.encode(text=doc_title)  # type: ignore
         #
-        context: Tensor = torch.tensor(data=title_toks, dtype=torch.int64, device=self.device)
+        context: Tensor = torch.tensor(data=title_toks, dtype=DTYPE_INT, device=self.device)
         #
         permissions: Tensor = torch.tile(
             input=self.permissions_vectors["file_name_read_only"],
@@ -898,7 +941,7 @@ class ChunkedDiffusionSystem:
                 full_c: Tensor = torch.full(
                     size=(c.shape[0], largest_sequence_length),
                     fill_value=self.model.config.tokenizer_pad_token,
-                    dtype=torch.int64,
+                    dtype=DTYPE_INT,
                     device=self.device
                 )
                 #
@@ -926,7 +969,7 @@ class ChunkedDiffusionSystem:
                 full_p: Tensor = torch.full(
                     size=(p.shape[0], largest_sequence_length, p.shape[2]),
                     fill_value=0,
-                    dtype=self.dtype,
+                    dtype=DTYPE_FLOAT,
                     device=self.device
                 )
                 #
@@ -1024,7 +1067,7 @@ class ChunkedDiffusionSystem:
             #
             ### Pad if needed. ###
             #
-            padding = torch.zeros((expected_length - global_states.shape[0], global_states.shape[1]), dtype=global_states.dtype, device=global_states.device)
+            padding = torch.zeros((expected_length - global_states.shape[0], global_states.shape[1]), dtype=DTYPE_FLOAT, device=global_states.device)
             #
             global_states = torch.cat([global_states, padding], dim=0)
         #
@@ -1092,7 +1135,7 @@ class ChunkedDiffusionSystem:
         ### Initialize output tensor. ###
         #
         batched_global_states = torch.zeros((batch_size, expected_global_length, hidden_size),
-                                        dtype=hidden_states.dtype, device=hidden_states.device)
+                                        dtype=DTYPE_FLOAT, device=hidden_states.device)
 
         #
         ### Extract global states for each batch element. ###
@@ -1251,13 +1294,22 @@ class ChunkedDiffusionSystem:
         chunks: list[Chunk],
         current_chunk: int,
         chunks_modified_hidden_states: Optional[dict[int, dict[int, Tensor]]] = None,
-    ) -> tuple[Tensor, Tensor, Tensor, int]:  # Returns (context tokens, permissions masks, causal mask, current_chunk_context_start_pos_idx)
+    ) -> tuple[Tensor, Tensor, Tensor, int, list[tuple[tuple[int, ...], tuple[int, ...], Tensor]]]:  # Returns (context tokens, permissions masks, causal mask, current_chunk_context_start_pos_idx, embeddings_override)
 
         #
         contexts_tensors: list[ Tensor ] = []
         permissions_tensors: list[ Tensor ] = []
         #
+        embedding_overide: list[tuple[tuple[int, ...], tuple[int, ...], Tensor]] = []
+        #
         current_chunk_context_start_pos_idx: int = 0
+
+        #
+        ### Helper to get current sequence position (cumulative length). ###
+        #
+        def current_pos() -> int:
+            #
+            return sum(t.shape[-1] for t in contexts_tensors)
 
         #
         ### First document separation and title
@@ -1349,15 +1401,34 @@ class ChunkedDiffusionSystem:
                 #
                 ### Chunk Global Context with chunk separation at the end. ###
                 #
-                applst(
-                    contexts_tensors, permissions_tensors,
-                    chunks[id_chunk].chunk_global_context_data, chunks[id_chunk].permission_mask_global_context_data
+                global_len = chunks[id_chunk].chunk_global_context_length
+                #
+                ### Append placeholders instead of globals. ###
+                #
+                placeholders: Tensor = torch.full((global_len,), fill_value=self.model.config.tokenizer_pad_token, dtype=DTYPE_INT, device=self.device)
+                #
+                start_pos: int = current_pos()
+                #
+                applst(contexts_tensors, permissions_tensors, placeholders, chunks[id_chunk].permission_mask_global_context_data)
+                #
+                ### New: Add override for this global block. ###
+                #
+                embedding_overide.append(
+                    (
+                        (start_pos, 0),
+                        (start_pos + global_len, chunks[id_chunk].chunk_global_context_data.shape[-1]),
+                        chunks[id_chunk].chunk_global_context_data
+                    )
                 )
                 #
-                applst(
-                    contexts_tensors, permissions_tensors,
-                    self.toks["chunk_sep"], self.permissions_vectors["separation"]
-                )
+                applst(contexts_tensors, permissions_tensors, self.toks["chunk_sep"], self.permissions_vectors["separation"])
+
+        #
+        for i, c in enumerate( contexts_tensors ):
+            #
+            if c.ndim == 1:
+                #
+                contexts_tensors[i] = c.unsqueeze(0)
 
         #
         context: Tensor = torch.cat( tensors=contexts_tensors, dim=-1 )
@@ -1368,6 +1439,11 @@ class ChunkedDiffusionSystem:
 
             #
             for tok_id, modified_hidden_state in chunks_modified_hidden_states[current_chunk].items():
+
+                #
+                if tok_id >= context.shape[-2]:
+                    #
+                    continue
 
                 #
                 if context.ndim == 2:
@@ -1382,7 +1458,13 @@ class ChunkedDiffusionSystem:
         attention_causal_mask: Tensor = self.prepare_attention_causal_mask_from_permissions_mask( permissions_mask=permissions_mask )
 
         #
-        return context, permissions_mask, attention_causal_mask, current_chunk_context_start_pos_idx
+        return (
+            context.to(dtype=DTYPE_INT, device=self.device),
+            permissions_mask.to(dtype=DTYPE_FLOAT, device=self.device),
+            attention_causal_mask,
+            current_chunk_context_start_pos_idx,
+            embedding_overide
+        )
 
 
     #
@@ -1410,8 +1492,9 @@ class ChunkedDiffusionSystem:
         permissions_mask: Tensor
         attention_causal_mask: Tensor
         current_chunk_context_start_pos_idx: int
+        embeddings_override: list[tuple[tuple[int, ...], tuple[int, ...], Tensor]]
         #
-        context, permissions_mask, attention_causal_mask, current_chunk_context_start_pos_idx = self.prepare_context_and_masks_for_all_chunks(
+        context, permissions_mask, attention_causal_mask, current_chunk_context_start_pos_idx, embeddings_override = self.prepare_context_and_masks_for_all_chunks(
             chunks_documents=chunks_documents,
             chunks_documents_idx=chunks_documents_idx,
             chunks=chunks,
@@ -1451,7 +1534,8 @@ class ChunkedDiffusionSystem:
             input_ids=context,
             permissions_mask=permissions_mask,
             attention_causal_mask=attention_causal_mask,
-            use_cache=use_cache
+            use_cache=use_cache,
+            embedding_overide=embeddings_override
         )
 
         #

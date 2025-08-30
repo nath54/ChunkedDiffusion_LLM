@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "accelerate>=1.10.0",
+    "bitsandbytes>=0.47.0",
     "datasets>=4.0.0",
     "matplotlib>=3.10.5",
     "ninja>=1.13.0",

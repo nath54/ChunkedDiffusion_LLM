@@ -7,6 +7,7 @@ import torch
 from torch import Tensor
 #
 from lib_get_device import get_best_device
+from lib_dtypes import DTYPE_FLOAT, DTYPE_INT
 
 
 #
@@ -106,7 +107,7 @@ class Chunk:
         initial_data: Optional[Tensor] = None,
         initial_data_permissions_mask: Optional[Tensor] = None,
         padding_token: int = 0,
-        dtype: torch.dtype = torch.float32,
+        dtype: torch.dtype = DTYPE_FLOAT,
         device: str | torch.device = get_best_device()
     ) -> None:
 
@@ -140,7 +141,7 @@ class Chunk:
         self.chunk_context_data: Tensor = torch.full(
             size=self.chunk_context_shape,
             fill_value=self.padding_token,
-            dtype=torch.int64,
+            dtype=DTYPE_INT,
             device=self.device
         )
         #

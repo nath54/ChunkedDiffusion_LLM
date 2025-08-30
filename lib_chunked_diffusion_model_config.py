@@ -39,15 +39,19 @@ class ChunkedDiffusionModelConfig:
         #
         ## Hugging face Model Id (ex: `Qwen/Qwen2.5-1.5B`). ##
         #
-        from_model_name: str = "Qwen/Qwen2.5-0.5B",
+        from_model_name: str = "HuggingFaceTB/SmolLM2-135M",
         #
         ## Indicates model family (eg: Qwen2, Qwen3, Llama-3.2, ...). ##
         #
-        from_model_family: str = "Qwen2",
+        from_model_family: str = "SmolLM",
         #
         ### From model Custom Config. ###
         #
         from_model_custom_config: Optional[dict[str, Any]] = None,
+        #
+        ### From Model QLoRA. ###
+        #
+        from_qlora_model: bool = False,
 
         #
         ### Tokenizer parameters. ###
@@ -107,6 +111,10 @@ class ChunkedDiffusionModelConfig:
         #
         self.from_model_config_hidden_size: int = self.from_model_config.hidden_size  # type: ignore
         self.from_model_config_voc_length: int = self.from_model_config.vocab_size  # type: ignore
+        #
+        ### QLoRA. ###
+        #
+        self.from_qlora_model: bool = from_qlora_model
 
         #
         ### Tokenizer parameters. ###

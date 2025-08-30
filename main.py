@@ -35,7 +35,7 @@ def main():
         #
         main_step1a_preparing_dataset()
     #
-    main_step1_pretraining()
+    # main_step1_pretraining()
 
     #
     ### Pre-training step 2: SFT next word prediction / blank filling from token space. ###

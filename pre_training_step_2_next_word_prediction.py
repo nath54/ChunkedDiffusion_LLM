@@ -55,14 +55,7 @@ class Trainer:
         #
         self.cdllm: ChunkedDiffusionSystem = ChunkedDiffusionSystem(
             model_config=ChunkedDiffusionModelConfig(
-                from_model_custom_config={
-                    "num_attention_heads": 4,
-                    "hidden_size": 1024,
-                    "intermediate_size": 4096,
-                    "num_hidden_layers": 4,
-                    "vocab_size": 151936,
-                    "_attn_implementation": "eager",
-                }
+                from_qlora_model=False
             )
         )
 
@@ -71,7 +64,7 @@ class Trainer:
         #
         ## Learning rate and optimizer. ##
         #
-        self.learning_rate: float = 1e-5
+        self.learning_rate: float = 1e-6
         #
         self.optimizer: Optimizer = AdamW(params=self.cdllm.parameters(), lr=self.learning_rate)
         #
@@ -355,37 +348,44 @@ class Trainer:
         for i in range(0, len(self.train_lst), self.batch_size_train):
 
             #
-            ### Zero gradients before computing new ones. ###
-            #
-            self.optimizer.zero_grad()
+            with torch.autograd.detect_anomaly():
 
-            #
-            ### Calculate embeddings and get loss. ###
-            #
-            loss: Optional[Tensor] = None
-            #
-            if self.batch_size_train <= 1:
                 #
-                loss = self.get_loss_on_text(dataset_idx=i, from_dataset="train")
-            #
-            else:
+                ### Zero gradients before computing new ones. ###
                 #
-                loss = self.get_loss_on_texts_batched(dataset_idxs=list(range(i, i+self.batch_size_train)), from_dataset="train")
+                self.optimizer.zero_grad()
 
-            #
-            pbar_train.update(n=self.batch_size_train)
-
-            #
-            if loss is None:
                 #
-                print(f"Warning: Skipping sample {i} due to invalid embeddings.")
-                continue
+                ### Calculate embeddings and get loss. ###
+                #
+                loss: Optional[Tensor] = None
+                #
+                if self.batch_size_train <= 1:
+                    #
+                    loss = self.get_loss_on_text(dataset_idx=i, from_dataset="train")
+                #
+                else:
+                    #
+                    loss = self.get_loss_on_texts_batched(dataset_idxs=list(range(i, i+self.batch_size_train)), from_dataset="train")
 
-            #
-            ### Backpropagate gradients and update model weights. ###
-            #
-            loss.backward()  # type: ignore
-            self.optimizer.step()
+                #
+                pbar_train.update(n=self.batch_size_train)
+
+                #
+                if loss is None:
+                    #
+                    print(f"Warning: Skipping sample {i} due to invalid embeddings.")
+                    continue
+
+                #
+                ### Backpropagate gradients and update model weights. ###
+                #
+                loss.backward()  # type: ignore
+                #
+                torch.nn.utils.clip_grad_norm_(self.cdllm.parameters(), max_norm=1.0)
+                #
+                self.optimizer.step()
+
 
             #
             ### Do the tests. ###

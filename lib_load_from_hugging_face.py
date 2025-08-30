@@ -9,6 +9,8 @@ from transformers import (
 )
 #
 import datasets as dts  # type: ignore
+#
+from lib_dtypes import DTYPE_FLOAT
 
 
 #
@@ -25,7 +27,7 @@ def load_config(model_name: str) -> PretrainedConfig:
 #
 ### Load pre-trained llm from hugging face. ###
 #
-def load_model(model_name: str) -> PreTrainedModel:
+def load_model(model_name: str, use_qlora: bool = False) -> PreTrainedModel:
 
     #
     model_loading_kwargs: dict[str, Any] = {
@@ -33,6 +35,19 @@ def load_model(model_name: str) -> PreTrainedModel:
         "device_map": "auto",
         "use_cache": False,
     }
+
+    #
+    if use_qlora:
+        #
+        from transformers import BitsAndBytesConfig  # type: ignore
+        #
+        quantization_config: BitsAndBytesConfig = BitsAndBytesConfig(  # type: ignore
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=DTYPE_FLOAT, # This is the key: hidden states will be DTYPE_FLOAT
+        )
+        #
+        model_loading_kwargs["quantization_config"] = quantization_config
 
     #
     model: PreTrainedModel = cast(PreTrainedModel, AutoModelForCausalLM.from_pretrained(  # type: ignore
