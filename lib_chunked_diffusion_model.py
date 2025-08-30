@@ -140,11 +140,15 @@ class ChunkedDiffusionModel(nn.Module):
         self.model_rotary_embedding: Qwen2RotaryEmbedding = Qwen2RotaryEmbedding(config=self.config.from_model_config, device=self.device)  # type: ignore
         #
         self.projector_intern: nn.Linear = nn.Linear(
-            in_features = self.config.from_model_config_hidden_size,
-            out_features = (self.config.from_model_config_hidden_size - self.config.permissions_mask_nb_items),
+            in_features = self.config.permissions_mask_nb_items,
+            out_features = self.config.from_model_config_hidden_size,
             dtype=DTYPE_FLOAT,
             device=self.device
         )
+        nn.init.normal_(self.projector_intern.weight, mean=0.0, std=0.02)  # Smaller std, like in transformers
+        nn.init.zeros_(self.projector_intern.bias) if self.projector_intern.bias is not None else None  # type: ignore
+        #
+        self.permission_mask_alpha: float = 0.25
 
         #
         self.prepare_model()
@@ -381,18 +385,28 @@ class ChunkedDiffusionModel(nn.Module):
         for layer in self.model_transformer_layers:  # type: ignore
 
             #
-            projected_hidden_state: Tensor = self.projector_intern( hidden_state )
-            # Dim: (B?, C, d_E - k)
+            projected_permissions_mask: Tensor = self.projector_intern( permissions_mask )
+            # Dim: (B?, C, d_E)
 
             #
-            hidden_state = torch.cat( tensors=[projected_hidden_state, permissions_mask], dim=-1 )  # Dim: (B?, C, d_E)
+            hidden_state = (self.permission_mask_alpha) * projected_permissions_mask + (1 - self.permission_mask_alpha) * hidden_state
+            # Dim: (B?, C, d_E)
 
             #
             ### Pass position_ids to layer; also fix mask polarity/dtype for SDPA. ###
             ### True now = masked (cannot attend) ###
             #
             # attn_mask = (~attention_causal_mask).to(dtype=torch.bool)
-            attn_mask: Tensor = (1.0 - attention_causal_mask.to(self.dtype)) * torch.finfo(self.dtype).min  # type: ignore
+            #
+            attn_mask: Tensor
+            #
+            if (attention_causal_mask.ndim == 2 and attention_causal_mask[0, 0]) or (attention_causal_mask.ndim == 3 and attention_causal_mask[0, 0, 0]):
+                #
+                attn_mask = ( 1.0 - attention_causal_mask.to(self.dtype) ) * torch.finfo(self.dtype).min  # type: ignore
+            #
+            else:
+                #
+                attn_mask = ( attention_causal_mask.to(self.dtype) ) * torch.finfo(self.dtype).min  # type: ignore
 
             #
             ### [0] because layer returns tuple (hidden, ...) ###

@@ -8,7 +8,7 @@ import json
 import torch
 from torch import Tensor
 from torch.nn import functional as F
-from torch.optim import Optimizer, AdamW
+from torch.optim import Optimizer, Adam
 #
 from datasets import Dataset  # type: ignore
 #
@@ -55,7 +55,7 @@ class Trainer:
         #
         self.cdllm: ChunkedDiffusionSystem = ChunkedDiffusionSystem(
             model_config=ChunkedDiffusionModelConfig(
-                from_qlora_model=False
+                from_qlora_model=True
             )
         )
 
@@ -66,7 +66,7 @@ class Trainer:
         #
         self.learning_rate: float = 1e-6
         #
-        self.optimizer: Optimizer = AdamW(params=self.cdllm.parameters(), lr=self.learning_rate)
+        self.optimizer: Optimizer = Adam(params=self.cdllm.parameters(), lr=self.learning_rate)
         #
         self.test_each_iterations: int = 200
         #
