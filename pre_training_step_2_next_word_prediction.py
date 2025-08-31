@@ -279,6 +279,9 @@ class Trainer:
                         truth_tokens_lst.append( context[0, c].unsqueeze(0)  )
 
                 #
+                nb_tokens: float = float( len( cursor_pos ) )
+
+                #
                 predicted_logits: Tensor = torch.cat(
                     tensors=new_logits_at_cursor,
                     dim=-2
@@ -293,7 +296,7 @@ class Trainer:
                 loss_item: Tensor = self.loss_fn(
                     truth_tokens=truth_tokens,
                     cdllm_logits=predicted_logits
-                )
+                ) / nb_tokens
 
                 #
                 if (not return_batched_loss) and inter_direct_loss:
@@ -592,7 +595,7 @@ class Trainer:
         self.cdllm.model.train()
 
         #
-        test_loss: float = -1
+        _test_loss: float = -1
 
         #
         train_loss_sum: float = 0
@@ -632,14 +635,23 @@ class Trainer:
             #
             if i % self.test_each_iterations == 0:
                 #
-                test_loss = self.test()
+                _test_loss = self.test()
+
+                #
+                train_loss_val: float = -1
+                #
+                if nb_train_losses > 0:
+                    #
+                    train_loss_val = train_loss_sum / nb_train_losses
+                #
+                print(f"Train loss : {train_loss_val} (/{nb_train_losses})")
 
                 #
                 train_loss_sum = 0
                 nb_train_losses = 0
 
             #
-            pbar_train.set_postfix_str(s=f"train loss = {train_loss_sum / max(1.0, nb_train_losses)} | test loss = {test_loss}")
+            pbar_train.set_postfix_str(s=f"train: {train_loss_sum / max(1.0, nb_train_losses):0.2f}")
 
 
 #
