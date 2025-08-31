@@ -214,12 +214,34 @@ class Trainer:
                 #
                 ### Forward the model to get logits and hidden_state outputs. ###
                 #
+                a_context: Tensor
+                a_permissions_mask: Tensor
+                a_attention_causal_mask: Tensor
+                a_embeddings_override: list[tuple[tuple[int, ...], tuple[int, ...], Tensor]]
+                #
+                if is_training:
+                    #
+                    a_context = context.clone().detach()
+                    a_permissions_mask = permissions_mask.clone().detach()
+                    a_attention_causal_mask = attention_causal_mask.clone().detach()
+                    a_embeddings_override = [
+                        ( t[0], t[1], t[2].clone().detach() )
+                        for t in embeddings_override
+                    ]
+                #
+                else:
+                    #
+                    a_context = context
+                    a_permissions_mask = permissions_mask
+                    a_attention_causal_mask = attention_causal_mask
+                    a_embeddings_override = embeddings_override
+                #
                 logits, _hidden_state = self.cdllm.model.forward(
-                    input_ids=context,
-                    permissions_mask=permissions_mask,
-                    attention_causal_mask=attention_causal_mask,
+                    input_ids=a_context,
+                    permissions_mask=a_permissions_mask,
+                    attention_causal_mask=a_attention_causal_mask,
                     use_cache=False,
-                    embedding_overide=embeddings_override
+                    embedding_overide=a_embeddings_override
                 )
 
                 #
@@ -274,7 +296,7 @@ class Trainer:
                 )
 
                 #
-                if not return_batched_loss and inter_direct_loss:
+                if (not return_batched_loss) and inter_direct_loss:
 
                     #
                     if is_training:
@@ -308,7 +330,7 @@ class Trainer:
             chunks[current_chunk_idx].chunk_global_context_data = self.cdllm.encode_one_chunk(chunks[current_chunk_idx])  # type: ignore
             #
             chunks_documents_idx.append( len(chunks_documents) - 1 )
-            chunks.append( self.cddlm.create_chunk_from_list_of_tokens(chunk_tok_ids = []) )  # type: ignore
+            chunks.append( self.cdllm.create_chunk_from_list_of_tokens(chunk_tok_ids = []) )  # type: ignore
             chunks_lengths.append( 0 )  # type: ignore
 
 
@@ -446,7 +468,7 @@ class Trainer:
 
 
     #
-    def test_text_from_dataset_idx(self, dataset_idx: int, from_dataset: str = "test", inter_direct_loss: bool = True) -> list[float]:
+    def test_text_from_dataset_idx(self, dataset_idx: int, from_dataset: str = "test", inter_direct_loss: bool = False) -> list[float]:
 
         #
         text: str
@@ -584,25 +606,25 @@ class Trainer:
         for i in range(0, len(self.train_lst), self.batch_size_train):
 
             #
-            with torch.autograd.detect_anomaly():
+            # with torch.autograd.detect_anomaly():
 
+            #
+            ### Calculate embeddings and get loss. ###
+            #
+            if self.batch_size_train <= 1:
                 #
-                ### Calculate embeddings and get loss. ###
+                losses: list[float] = self.train_text_from_dataset_idx(dataset_idx=i, from_dataset="train")
                 #
-                if self.batch_size_train <= 1:
-                    #
-                    losses: list[float] = self.train_text_from_dataset_idx(dataset_idx=i, from_dataset="train")
-                    #
-                    train_loss_sum += sum( losses )
-                    nb_train_losses += float( len(losses) )
+                train_loss_sum += sum( losses )
+                nb_train_losses += float( len(losses) )
+            #
+            else:
                 #
-                else:
-                    #
-                    train_loss_sum += self.train_text_from_dataset_idx_batched(dataset_idxs=list(range(i, i+self.batch_size_train)), from_dataset="train")
-                    nb_train_losses += 1
+                train_loss_sum += self.train_text_from_dataset_idx_batched(dataset_idxs=list(range(i, i+self.batch_size_train)), from_dataset="train")
+                nb_train_losses += 1
 
-                #
-                pbar_train.update(n=self.batch_size_train)
+            #
+            pbar_train.update(n=self.batch_size_train)
 
 
             #
@@ -611,6 +633,10 @@ class Trainer:
             if i % self.test_each_iterations == 0:
                 #
                 test_loss = self.test()
+
+                #
+                train_loss_sum = 0
+                nb_train_losses = 0
 
             #
             pbar_train.set_postfix_str(s=f"train loss = {train_loss_sum / max(1.0, nb_train_losses)} | test loss = {test_loss}")
