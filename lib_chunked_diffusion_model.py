@@ -1684,9 +1684,6 @@ class ChunkedDiffusionSystem:
         self,
         text: str,
         documents: Optional[dict[str, str]] = None,
-        max_length: int = 128,
-        stop_if_eos_token: bool = True,
-        generate_n_toks_per_n_toks: int = 1
     ) -> tuple[list[str], list[int], list[Chunk], list[int]]:
 
         #
