@@ -148,7 +148,7 @@ class ChunkedDiffusionModel(nn.Module):
         nn.init.normal_(self.projector_intern.weight, mean=0.0, std=0.02)  # Smaller std, like in transformers
         nn.init.zeros_(self.projector_intern.bias) if self.projector_intern.bias is not None else None  # type: ignore
         #
-        self.permission_mask_alpha: float = 0.25
+        self.permission_mask_alpha: float = 0.1
 
         #
         self.prepare_model()
@@ -1725,10 +1725,7 @@ class ChunkedDiffusionSystem:
         #
         chunks_documents, chunks_documents_idx, chunks, chunks_lengths = self.prepare_chunks_for_next_tokens_predictions(
             text = text,
-            documents = documents,
-            max_length = max_length,
-            stop_if_eos_token = stop_if_eos_token,
-            generate_n_toks_per_n_toks = generate_n_toks_per_n_toks,
+            documents = documents
         )
         #
         chunks_modified_hidden_states: dict[int, dict[int, Tensor]] = {}
@@ -1805,7 +1802,15 @@ class ChunkedDiffusionSystem:
                 #
                 ### For the moment, just use argmax to get the tokens idx from logits, but there should be ways to improve that (example: check for better tokens that follows each others). ###
                 #
-                token_ids: Tensor = torch.argmax(input=logit, dim=-2)
+                # print(f"DEBUG | logit.shape  = {logit.shape} (ndim={logit.ndim})")
+                #
+                if logit.ndim == 1:
+                    #
+                    token_ids: Tensor = torch.argmax(input=logit, dim=0)
+                #
+                else:
+                    #
+                    token_ids: Tensor = torch.argmax(input=logit, dim=-2)
                 #
                 generated_text.append( self.tokenizer.decode(token_ids) )  # type: ignore
 
